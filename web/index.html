@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>twig</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- 顶部工具栏 -->
+  <header class="toolbar">
+    <button class="repo-btn" id="repoBtn" title="Switch repository">
+      <span class="repo-name" id="repoName">No repository</span>
+      <span class="repo-branch" id="repoBranch"></span>
+      <span class="caret">▾</span>
+    </button>
+
+    <div class="tb-group">
+      <button class="tb" data-act="fetch" title="Fetch from remote (does not change local branches)">Fetch</button>
+      <button class="tb" data-act="pull" title="Pull and merge the upstream of the current branch">Pull<span class="badge" id="badgeBehind"></span></button>
+      <button class="tb" data-act="push" title="Push the current branch">Push<span class="badge" id="badgeAhead"></span></button>
+    </div>
+
+    <div class="tb-group">
+      <button class="tb" data-act="newBranch" title="Create a branch at the current commit">Branch</button>
+      <button class="tb" data-act="stash" title="Stash the current changes">Stash</button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="repo-state" id="repoState" hidden></div>
+    <button class="tb" id="refreshBtn" title="Refresh (R)">Refresh</button>
+  </header>
+
+  <div class="body">
+
+    <!-- 左侧栏 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-section">
+        <div class="side-item wip" id="wipItem">
+          <span class="side-label">Working Copy</span>
+          <span class="count" id="wipCount"></span>
+        </div>
+      </div>
+
+      <div class="side-section">
+        <div class="side-head">
+          <span>Branches</span>
+          <div class="side-head-actions">
+            <button class="mini" data-select="all" title="Check every branch">All</button>
+            <button class="mini" data-select="none" title="Uncheck everything (graph shows all branches)">None</button>
+            <button class="mini" data-select="current" title="Show only the current branch">Current</button>
+          </div>
+        </div>
+        <div class="filter-hint" id="filterHint"></div>
+        <input class="side-filter" id="branchFilter" placeholder="Filter branches…">
+        <div class="side-list" id="localList"></div>
+      </div>
+
+      <!-- 远程分支和标签动辄上百条，默认折叠起来，要看再展开 -->
+      <div class="side-section" id="remoteSection">
+        <div class="side-head collapsible collapsed" data-collapse="remoteList">
+          <span class="tri">▾</span><span>Remotes</span><span class="count" id="remoteCount"></span>
+        </div>
+        <div class="side-list hidden" id="remoteList"></div>
+      </div>
+
+      <div class="side-section">
+        <div class="side-head collapsible collapsed" data-collapse="tagList">
+          <span class="tri">▾</span><span>Tags</span><span class="count" id="tagCount"></span>
+        </div>
+        <div class="side-list hidden" id="tagList"></div>
+      </div>
+
+      <div class="side-section">
+        <div class="side-head collapsible" data-collapse="stashList">
+          <span class="tri">▾</span><span>Stashes</span><span class="count" id="stashCount"></span>
+        </div>
+        <div class="side-list" id="stashList"></div>
+      </div>
+    </aside>
+
+    <div class="resizer" id="sidebarResizer"></div>
+
+    <!-- 右侧主区 -->
+    <main class="main">
+
+      <!-- 提交图视图 -->
+      <section class="pane graph-pane" id="graphPane">
+        <div class="graph-head">
+          <div class="gh-cell gh-graph">Graph</div>
+          <div class="gh-cell gh-msg">Description</div>
+          <div class="gh-cell gh-author">Author</div>
+          <div class="gh-cell gh-date">Date</div>
+          <div class="gh-cell gh-hash">Commit</div>
+        </div>
+        <div class="graph-scroll" id="graphScroll">
+          <div class="graph-inner" id="graphInner">
+            <svg class="graph-svg" id="graphSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+            <div class="rows" id="rows"></div>
+          </div>
+          <div class="empty" id="graphEmpty" hidden></div>
+        </div>
+        <div class="graph-foot">
+          <span id="graphStat"></span>
+          <span class="spacer"></span>
+          <label class="chk" title="Follow only the first parent: merged-in branch detail is collapsed, leaving a single mainline">
+            <input type="checkbox" id="firstParentChk"> First parent only
+          </label>
+          <label>Show
+            <select id="limitSel">
+              <option value="200">200</option>
+              <option value="500" selected>500</option>
+              <option value="1000">1000</option>
+              <option value="3000">3000</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <div class="resizer-h" id="detailResizer"></div>
+
+      <!-- 下方详情 / 暂存视图 -->
+      <section class="pane detail-pane" id="detailPane">
+        <div class="detail-empty" id="detailEmpty">Select a commit to see its details</div>
+
+        <!-- 提交详情 -->
+        <div class="detail" id="commitDetail" hidden>
+          <div class="detail-head">
+            <div class="dh-subject" id="dSubject"></div>
+            <div class="dh-meta" id="dMeta"></div>
+            <pre class="dh-body" id="dBody"></pre>
+          </div>
+          <div class="detail-body">
+            <div class="file-list" id="dFiles"></div>
+            <div class="resizer" id="detailFileResizer"></div>
+            <div class="diff-view" id="dDiff"></div>
+          </div>
+        </div>
+
+        <!-- 工作区暂存 -->
+        <div class="detail wip-view" id="wipDetail" hidden>
+          <div class="wip-cols">
+            <div class="wip-col">
+              <div class="wip-col-head">
+                <span>Unstaged</span>
+                <button class="mini" id="stageAllBtn">Stage All</button>
+              </div>
+              <div class="file-list" id="unstagedList"></div>
+            </div>
+            <div class="wip-col">
+              <div class="wip-col-head">
+                <span>Staged</span>
+                <button class="mini" id="unstageAllBtn">Unstage All</button>
+              </div>
+              <div class="file-list" id="stagedList"></div>
+            </div>
+          </div>
+          <div class="resizer" id="wipResizer"></div>
+          <div class="wip-right">
+            <div class="diff-view" id="wipDiff"></div>
+            <div class="commit-box">
+              <textarea id="commitMsg" placeholder="Commit message…  (Cmd/Ctrl + Enter to commit)"></textarea>
+              <div class="commit-actions">
+                <label class="chk"><input type="checkbox" id="amendChk"> Amend last commit</label>
+                <span class="spacer"></span>
+                <span class="hint" id="commitHint"></span>
+                <button class="primary" id="commitBtn">Commit</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 状态条 -->
+  <footer class="statusbar">
+    <span id="statusMsg">Ready</span>
+  </footer>
+</div>
+
+<!-- 仓库选择弹层 -->
+<div class="modal" id="repoModal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">Open Repository<button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="recent" id="recentList"></div>
+      <div class="browse">
+        <div class="browse-path">
+          <button class="mini" id="upBtn">Up</button>
+          <input id="pathInput" placeholder="Type a path and press Enter">
+          <button class="mini primary" id="openHereBtn">Open This Folder</button>
+        </div>
+        <div class="browse-list" id="browseList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 通用输入弹层 -->
+<div class="modal" id="promptModal" hidden>
+  <div class="modal-box small">
+    <div class="modal-head" id="promptTitle">Input<button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="prompt-desc" id="promptDesc"></div>
+      <input id="promptInput">
+      <label class="chk" id="promptChkWrap" hidden><input type="checkbox" id="promptChk"> <span id="promptChkLabel"></span></label>
+      <div class="modal-actions">
+        <button data-close>Cancel</button>
+        <button class="primary" id="promptOk">OK</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 右键菜单 -->
+<div class="ctxmenu" id="ctxMenu" hidden></div>
+
+<!-- 输出弹层：展示 git 命令的原始输出 -->
+<div class="modal" id="outputModal" hidden>
+  <div class="modal-box">
+    <div class="modal-head" id="outputTitle">Git Output<button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <pre class="output" id="outputText"></pre>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
