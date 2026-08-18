@@ -20,6 +20,11 @@ INSTALL=false
 
 echo "==> 编译二进制"
 mkdir -p "$DIST"
+# dist/ 里的 .app 只是装到 /Applications 之前的中间产物。它一旦被 Spotlight 索引，
+# 搜 "twig" 就会冒出两个一模一样的图标，分不清该点哪个。
+# 这个空文件请求 Spotlight 别索引本目录。⚠️ 实测它只在索引器**第一次**扫到该目录时生效，
+# 对已经进了索引的条目不管用——所以真正兜底的是下面 -i 分支里的 rm -rf "$DIST"。
+touch "$DIST/.metadata_never_index"
 go build -o "$DIST/twig-bin" .
 
 echo "==> 生成图标"
@@ -96,4 +101,8 @@ if $INSTALL; then
   rm -rf /Applications/twig.app
   cp -R "$APP" /Applications/
   echo "==> 已安装到 /Applications/twig.app"
+  # 装完就把中间产物删掉。留着它，Spotlight 里搜 twig 会出现两个一模一样的图标
+  # （一个在 dist/、一个在 /Applications），实测删掉目录后那条索引会立刻消失。
+  rm -rf "$DIST"
+  echo "==> 已清理中间产物 dist/"
 fi
