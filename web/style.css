@@ -218,7 +218,11 @@ input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-colo
 
 .graph-scroll { flex: 1; overflow: auto; position: relative; }
 .graph-inner { position: relative; min-height: 100%; }
-.graph-svg { position: absolute; top: 0; left: 0; pointer-events: none; }
+/* z-index 让连线浮在行的上面。
+   不加的话，SVG 和 .rows 都是定位元素、层级都是 auto，就按 DOM 先后堆叠，
+   排在后面的行会用自己的背景色（hover 的灰、选中的蓝）把线整段盖掉。
+   pointer-events: none 保证鼠标事件照旧穿透到下面的行，点击不受影响。 */
+.graph-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
 .rows { position: relative; }
 
 .row {
