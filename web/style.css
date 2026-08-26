@@ -240,6 +240,11 @@ input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-colo
 .row-date { width: 150px; flex: 0 0 auto; padding: 0 8px; color: var(--text-dim); }
 .row-hash { width: 90px; flex: 0 0 auto; padding: 0 8px; color: var(--text-faint); font-family: var(--mono); }
 
+/* 比较两个版本时，两端各在行首留一条色条：起点用灰、终点用强调色，
+   跟详情面板里 From / To 两行的色条对应得上。 */
+.row.cmp-from { box-shadow: inset 3px 0 0 var(--text-faint); }
+.row.cmp-to   { box-shadow: inset 3px 0 0 var(--accent); }
+
 .row.wip-row { font-weight: 600; }
 .row.wip-row .row-msg { color: var(--accent); }
 
@@ -286,6 +291,17 @@ input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-colo
   font: 12px/1.5 var(--mono); color: var(--text-dim);
 }
 .dh-body:empty { display: none; }
+
+/* 比较模式：详情头部的 From / To 两行 */
+.dh-meta .cmp-end {
+  max-width: 46%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-left: 6px;
+}
+.dh-meta .cmp-end.from { border-left: 3px solid var(--text-faint); }
+.dh-meta .cmp-end.to   { border-left: 3px solid var(--accent); }
+.dh-meta .cmp-end code { font-weight: 600; color: var(--text); }
+.dh-meta .mini { align-self: center; }
 
 .detail-body { display: flex; flex: 1; min-height: 0; }
 .file-list {

@@ -281,6 +281,66 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, detail)
 }
 
+// GET /api/rangediff —— 比较两个提交版本之间的差异。
+//
+// 对应界面上按住 Cmd / Ctrl 勾中两个提交：from 是较旧的那个版本，to 是较新的。
+func (s *Server) handleRangeDiff(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.currentRepo()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	q := r.URL.Query()
+	from, to := q.Get("from"), q.Get("to")
+	if from == "" || to == "" {
+		writeErr(w, fmt.Errorf("missing 'from' or 'to' parameter"))
+		return
+	}
+	if err := checkArgs(from, to); err != nil {
+		writeErr(w, err)
+		return
+	}
+	d, err := repo.RangeDiff(from, to)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, d)
+}
+
+// GET /api/rangefilediff —— 两个版本之间某一个文件的逐行差异。
+//
+// 单独一个接口是因为 /api/rangediff 只给文件清单：两个相隔很远的版本之间
+// 可能有上千个文件、几十万行，一次全传会把浏览器卡死。
+func (s *Server) handleRangeFileDiff(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.currentRepo()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	q := r.URL.Query()
+	from, to, path := q.Get("from"), q.Get("to"), q.Get("path")
+	if from == "" || to == "" || path == "" {
+		writeErr(w, fmt.Errorf("missing 'from', 'to' or 'path' parameter"))
+		return
+	}
+	// 只校验 ref：文件路径不能一起拦，命令里已经用 -- 隔开了，
+	// 拦掉的话像 -weird.txt 这种合法文件名反而打不开。
+	if err := checkArgs(from, to); err != nil {
+		writeErr(w, err)
+		return
+	}
+	files, err := repo.RangeFileDiff(from, to, path, q.Get("orig"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if files == nil {
+		files = []git.DiffFile{}
+	}
+	writeJSON(w, map[string]any{"files": files})
+}
+
 // GET /api/status —— 工作区状态。
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	repo, err := s.currentRepo()

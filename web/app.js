@@ -59,6 +59,13 @@ function setStatus(msg, kind = '') {
   bar.parentElement.className = 'statusbar' + (kind ? ' ' + kind : '');
 }
 
+// multiKey 判断"加选"那个修饰键有没有按下。
+//
+// macOS 上 Ctrl + 点击等同于右键，所以那里只认 Cmd；其他平台认 Ctrl。
+// 两边都认的话，Mac 用户 Ctrl + 点击会同时弹出右键菜单又进比较模式。
+const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent || '');
+const multiKey = (ev) => (IS_MAC ? ev.metaKey : ev.ctrlKey);
+
 // plural: 数量 + 单复数正确的名词，如 1 branch / 3 branches。
 const plural = (n, word, plur) => `${n} ${n === 1 ? word : (plur || word + 's')}`;
 
@@ -92,6 +99,13 @@ const S = {
   selCommit: null,     // 当前选中的提交 hash
   detail: null,        // 当前提交详情
   detailFile: null,    // 详情里选中的文件路径
+  // 比较模式：按住 Cmd / Ctrl 点第二个提交，看这两个版本之间的差异。
+  // cmpB 为空表示不在比较模式；cmpA 是先选中的那条（锚点，换比较对象时不动）。
+  cmpA: null,          // { hash, row }
+  cmpB: null,          // { hash, row }
+  cmpSwap: false,      // 反转比较方向（默认从旧版本看到新版本）
+  cmpDetail: null,     // 比较结果
+  cmpFile: null,       // 比较结果里选中的文件路径
   wipMode: false,      // 下方面板是否处于"工作区"模式
   wipFile: null,       // { path, staged, untracked }
   lastOutput: null,    // 上一次 git 操作的原始输出，点状态栏可以看
@@ -246,6 +260,7 @@ async function refreshAll() {
     renderToolbar();
 
     if (S.wipMode) renderWip();
+    else if (S.cmpB) await loadCompare();
     else if (S.selCommit) await selectCommit(S.selCommit, true);
 
     setStatus(plural(S.graph.commits.length, 'commit') +
@@ -523,6 +538,7 @@ function renderGraph() {
   if (hasWip) rowsFrag.append(wipRow());
   for (const c of g.commits) rowsFrag.append(commitRow(c));
   rows.append(rowsFrag);
+  markRows();
 
   $('graphStat').textContent =
     `${plural(g.commits.length, 'commit')} · ${plural(g.width, 'lane')}` +
@@ -585,8 +601,6 @@ function commitRow(c) {
   const row = el('div', 'row');
   row.dataset.hash = c.hash;
   row.style.height = ROW_H + 'px';
-  if (c.hash === S.selCommit && !S.wipMode) row.classList.add('sel');
-
   row.append(el('div', 'row-graph'));
 
   const msg = el('div', 'row-msg');
@@ -604,7 +618,11 @@ function commitRow(c) {
   row.append(el('div', 'row-date', fmtDate(c.timestamp)));
   row.append(el('div', 'row-hash', c.short));
 
-  row.onclick = () => selectCommit(c.hash);
+  row.onclick = (ev) => {
+    // 按住 Cmd（macOS）/ Ctrl（其他平台）：把这一条和当前选中的那条放在一起比较。
+    if (multiKey(ev)) toggleCompare(c);
+    else selectCommit(c.hash);
+  };
   row.oncontextmenu = (ev) => showCommitMenu(ev, c);
   return row;
 }
@@ -614,9 +632,10 @@ function commitRow(c) {
 async function selectCommit(hash, keepScroll = false) {
   S.selCommit = hash;
   S.wipMode = false;
+  S.cmpA = S.cmpB = S.cmpDetail = S.cmpFile = null;
+  S.cmpSwap = false;
   $('wipItem').classList.remove('active');
-
-  for (const r of document.querySelectorAll('.row')) r.classList.toggle('sel', r.dataset.hash === hash);
+  markRows();
 
   $('detailEmpty').hidden = true;
   $('wipDetail').hidden = true;
@@ -657,15 +676,23 @@ function renderCommitDetail() {
 
   $('dBody').textContent = d.body || '';
 
-  // 文件列表
+  renderFileList(d.files, S.detailFile, '(this commit changes no files)',
+    (path) => { S.detailFile = path; renderCommitDetail(); });
+  const file = d.files.find((f) => f.path === S.detailFile);
+  renderDiff($('dDiff'), file ? [file] : []);
+}
+
+// renderFileList 画详情面板左边那一列文件。
+//
+// 只负责列表，不负责右边的 diff——两种模式取 diff 的方式不一样：
+// 看单个提交时内容已经跟着详情一起来了，比较两个版本时要按文件单独去取。
+function renderFileList(files, current, emptyText, onPick) {
   const list = $('dFiles');
   list.textContent = '';
-  if (!d.files.length) {
-    list.append(el('div', 'diff-note', '(this commit changes no files)'));
-  }
-  for (const f of d.files) {
+  if (!files.length) list.append(el('div', 'diff-note', emptyText));
+  for (const f of files) {
     const item = el('div', 'file-item');
-    if (f.path === S.detailFile) item.classList.add('sel');
+    if (f.path === current) item.classList.add('sel');
     item.append(el('span', 'st ' + f.status, f.status));
     const p = el('span', 'fp', f.path);
     p.title = f.origPath ? `${f.origPath} → ${f.path}` : f.path;
@@ -674,12 +701,155 @@ function renderCommitDetail() {
     if (f.additions) stat.append(el('span', 'a', '+' + f.additions));
     if (f.deletions) stat.append(el('span', 'd', ' -' + f.deletions));
     item.append(stat);
-    item.onclick = () => { S.detailFile = f.path; renderCommitDetail(); };
+    item.onclick = () => onPick(f.path);
     list.append(item);
   }
+}
 
-  const file = d.files.find((f) => f.path === S.detailFile);
-  renderDiff($('dDiff'), file ? [file] : []);
+/* ==================== 比较两个提交 ==================== */
+
+// markRows 刷新提交列表上的选中高亮。
+// 普通模式只亮一行；比较模式亮两行，并用行首的色条标出谁是起点、谁是终点。
+function markRows() {
+  const cmp = !!S.cmpB;
+  const [from, to] = cmp ? compareEnds() : [null, null];
+  for (const r of document.querySelectorAll('.row')) {
+    const h = r.dataset.hash;
+    // 工作区那一行没有 hash，它的高亮只跟着 wipMode 走。
+    // 这里必须显式处理：漏掉的话它的高亮会一直留着，跟提交行同时亮。
+    if (!h) { r.classList.toggle('sel', S.wipMode); continue; }
+    r.classList.toggle('sel', cmp ? (h === from || h === to) : (!S.wipMode && h === S.selCommit));
+    r.classList.toggle('cmp-from', cmp && h === from);
+    r.classList.toggle('cmp-to', cmp && h === to);
+  }
+}
+
+// compareEnds 定出比较的方向：图上靠下的那条（row 更大）是更早的版本，
+// 拿它当起点，看到的就是"从旧版本到新版本发生了什么"。Swap 按钮可以反过来。
+function compareEnds() {
+  const a = S.cmpA, b = S.cmpB;
+  const older = a.row >= b.row ? a : b;
+  const newer = older === a ? b : a;
+  return S.cmpSwap ? [newer.hash, older.hash] : [older.hash, newer.hash];
+}
+
+// toggleCompare 处理 Cmd / Ctrl + 点击一条提交。
+function toggleCompare(c) {
+  if (!S.cmpB) {
+    // 还没进比较模式：拿当前选中的那条当另一端。没有选中的话就当普通点击。
+    const anchor = ((S.graph && S.graph.commits) || []).find((x) => x.hash === S.selCommit);
+    if (!anchor || anchor.hash === c.hash) { selectCommit(c.hash); return; }
+    S.cmpA = { hash: anchor.hash, row: anchor.row };
+    S.cmpB = { hash: c.hash, row: c.row };
+  } else if (c.hash === S.cmpA.hash || c.hash === S.cmpB.hash) {
+    exitCompare();                       // 再点已经选中的任一端就退出比较
+    return;
+  } else {
+    S.cmpB = { hash: c.hash, row: c.row }; // 换一个比较对象，锚点不动
+  }
+  S.cmpSwap = false;
+  S.cmpFile = null;
+  loadCompare();
+}
+
+// exitCompare 回到"只看一个提交"的普通模式，选中留在锚点那条上。
+function exitCompare() {
+  const back = S.cmpA ? S.cmpA.hash : S.selCommit;
+  S.cmpA = S.cmpB = S.cmpDetail = S.cmpFile = null;
+  S.cmpSwap = false;
+  if (back) selectCommit(back);
+  else markRows();
+}
+
+async function loadCompare() {
+  if (!S.cmpB) return;
+  const [from, to] = compareEnds();
+  S.wipMode = false;
+  $('wipItem').classList.remove('active');
+  $('detailEmpty').hidden = true;
+  $('wipDetail').hidden = true;
+  $('commitDetail').hidden = false;
+  markRows();
+
+  try {
+    const d = await apiGet('/api/rangediff?from=' + encodeURIComponent(from) +
+                           '&to=' + encodeURIComponent(to));
+    S.cmpDetail = d;
+    if (!S.cmpFile || !d.files.some((f) => f.path === S.cmpFile)) {
+      S.cmpFile = d.files.length ? d.files[0].path : null;
+    }
+    renderCompareDetail();
+    loadCompareFile();
+  } catch (e) {
+    setStatus(e.message, 'err');
+  }
+}
+
+// cmpFileSeq 给每次取文件内容编号：连着点几个文件时，只认最后一次的结果，
+// 免得先发出的请求后返回、把已经换掉的文件内容画上去。
+let cmpFileSeq = 0;
+
+// loadCompareFile 取比较模式下当前选中那个文件的逐行差异。
+//
+// 文件清单是一次性拿到的，内容按需单独取，原因见后端 parseDiffStats 的注释。
+async function loadCompareFile() {
+  const box = $('dDiff');
+  const f = ((S.cmpDetail && S.cmpDetail.files) || []).find((x) => x.path === S.cmpFile);
+  if (!f) { renderDiff(box, []); return; }
+
+  const seq = ++cmpFileSeq;
+  const [from, to] = compareEnds();
+  box.textContent = '';
+  box.append(el('div', 'diff-note', 'Loading…'));
+  try {
+    const d = await apiGet('/api/rangefilediff' +
+      '?from=' + encodeURIComponent(from) +
+      '&to=' + encodeURIComponent(to) +
+      '&path=' + encodeURIComponent(f.path) +
+      (f.origPath ? '&orig=' + encodeURIComponent(f.origPath) : ''));
+    if (seq !== cmpFileSeq) return;
+    renderDiff(box, d.files || []);
+  } catch (e) {
+    if (seq !== cmpFileSeq) return;
+    box.textContent = '';
+    box.append(el('div', 'diff-note', e.message));
+  }
+}
+
+function renderCompareDetail() {
+  const d = S.cmpDetail;
+  if (!d) return;
+
+  $('dSubject').textContent = `Comparing ${d.from.short} … ${d.to.short}`;
+
+  const meta = $('dMeta');
+  meta.textContent = '';
+  const end = (label, c, cls) => {
+    const s = el('span', 'cmp-end ' + cls);
+    s.append(el('span', '', label + ' '));
+    s.append(el('code', '', c.short));
+    s.append(el('span', '', ' ' + c.subject));
+    s.title = `${c.authorName} · ${new Date(c.timestamp * 1000).toLocaleString('en-US')}`;
+    meta.append(s);
+  };
+  end('From', d.from, 'from');
+  end('To', d.to, 'to');
+
+  // 这两个版本是一前一后，还是从某处分叉、各自走了一段。
+  let rel;
+  if (d.ahead && d.behind) rel = `diverged · ${d.ahead} ahead, ${d.behind} behind`;
+  else if (d.ahead) rel = `${plural(d.ahead, 'commit')} ahead`;
+  else if (d.behind) rel = `${plural(d.behind, 'commit')} behind`;
+  else rel = 'same commit';
+  meta.append(el('span', '', rel));
+  meta.append(el('span', '', plural(d.files.length, 'file') + ' changed'));
+
+  meta.append(mkMini('⇄ Swap', () => { S.cmpSwap = !S.cmpSwap; S.cmpFile = null; loadCompare(); }));
+  meta.append(mkMini('Exit compare', exitCompare));
+
+  $('dBody').textContent = '';
+  renderFileList(d.files, S.cmpFile, '(these two versions are identical)',
+    (path) => { S.cmpFile = path; renderCompareDetail(); loadCompareFile(); });
 }
 
 /* diff 渲染 */
@@ -1022,8 +1192,13 @@ function showMenu(ev, items) {
 function hideMenu() { $('ctxMenu').hidden = true; }
 
 function showCommitMenu(ev, c) {
+  // Cmd / Ctrl + 点击是同一件事，这里再给一个看得见的入口，免得功能藏起来没人知道。
+  const anchor = S.cmpB ? null : ((S.graph && S.graph.commits) || []).find((x) => x.hash === S.selCommit);
   const items = [
     { title: `${c.short}  ${c.subject}` },
+    ...(anchor && anchor.hash !== c.hash
+      ? [{ label: `Compare with ${anchor.short}`, run: () => toggleCompare(c) }, { sep: true }]
+      : []),
     { label: 'Checkout this commit (detached HEAD)', run: () => runOp({ action: 'checkout', target: c.hash }, 'Checkout ' + c.short) },
     { label: 'Create branch here…', run: () => doNewBranch(c.hash) },
     { sep: true },
@@ -1247,10 +1422,14 @@ function bindEvents() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
       hideMenu();
+      let closed = false;
       for (const m of document.querySelectorAll('.modal:not([hidden])')) {
         if (m.id === 'repoModal' && !S.repo) continue;
         closeModal(m.id);
+        closed = true;
       }
+      // 没有弹窗要关，Esc 就用来退出比较模式。
+      if (!closed && S.cmpB) exitCompare();
     }
     const typing = /input|textarea/i.test(document.activeElement.tagName);
     if (typing) return;

@@ -47,8 +47,10 @@ type DiffLine struct {
 // maxDiffLinesPerFile 限制单文件返回的 diff 行数，避免超大文件把浏览器卡死。
 const maxDiffLinesPerFile = 4000
 
-// CommitDetail 读取单个提交的详情（含 diff）。
-func (r *Repo) CommitDetail(hash string) (*CommitDetail, error) {
+// commitMeta 读取单个提交的元信息（作者 / 时间 / 标题 / 正文），不含 diff。
+//
+// 单独抽出来是因为"看一个提交"和"比较两个版本"都要用它。
+func (r *Repo) commitMeta(hash string) (*CommitDetail, error) {
 	format := strings.Join([]string{"%H", "%P", "%an", "%ae", "%at", "%ct", "%s", "%b"}, fieldSep)
 	out, err := r.run("show", "-s", "--pretty=format:"+format, hash)
 	if err != nil {
@@ -76,6 +78,19 @@ func (r *Repo) CommitDetail(hash string) (*CommitDetail, error) {
 		},
 		Body:       strings.TrimRight(f[7], "\n"),
 		CommitDate: cts,
+		Files:      []DiffFile{},
+	}
+	// 空切片会被序列化成 JSON null，前端拿它当数组用就会炸。
+	// 这里的 refs 目前没人读，但下一个往上加代码的人多半会读。
+	d.ensureRefs()
+	return d, nil
+}
+
+// CommitDetail 读取单个提交的详情（含 diff）。
+func (r *Repo) CommitDetail(hash string) (*CommitDetail, error) {
+	d, err := r.commitMeta(hash)
+	if err != nil {
+		return nil, err
 	}
 
 	// 合并提交默认不产出 diff，用 -m 让它对第一个父提交出 diff。
@@ -87,6 +102,71 @@ func (r *Repo) CommitDetail(hash string) (*CommitDetail, error) {
 	}
 	d.Files = parseUnifiedDiff(string(patch))
 	return d, nil
+}
+
+// RangeDetail 是"比较两个提交版本"的结果，对应界面上按住 Cmd 勾中两个提交。
+type RangeDetail struct {
+	From *Commit `json:"from"`
+	To   *Commit `json:"to"`
+	// Files 是从 From 那个版本变成 To 那个版本，文件上发生的全部改动。
+	Files []DiffFile `json:"files"`
+	// Ahead 是 To 独有的提交数，Behind 是 From 独有的提交数。
+	// Behind 为 0 说明 From 是 To 的祖先，两个版本在一条直线上；
+	// 两个都不为 0 说明它们从某处分叉、各自走了一段。
+	Ahead  int `json:"ahead"`
+	Behind int `json:"behind"`
+}
+
+// RangeDiff 比较两个提交之间的差异，等价于 git diff <from> <to>。
+//
+// 这里用的是两点 diff，也就是直接比较两个版本的快照，而不是三点的
+// from...to（那个只算 To 这一侧新增的改动、把 From 独有的部分忽略掉）。
+// 界面上勾两个提交，想看的就是"这两个版本到底哪里不一样"，所以要两点。
+func (r *Repo) RangeDiff(from, to string) (*RangeDetail, error) {
+	fc, err := r.commitMeta(from)
+	if err != nil {
+		return nil, err
+	}
+	tc, err := r.commitMeta(to)
+	if err != nil {
+		return nil, err
+	}
+	d := &RangeDetail{From: &fc.Commit, To: &tc.Commit, Files: []DiffFile{}}
+
+	// 一次拿到两侧各自独有的提交数，用来在界面上说清这是前后关系还是分叉。
+	// 这一步只是补充信息，失败了不影响 diff 本身，所以忽略错误。
+	if out, err := r.run("rev-list", "--left-right", "--count", from+"..."+to); err == nil {
+		if f := strings.Fields(out); len(f) == 2 {
+			d.Behind, _ = strconv.Atoi(f[0])
+			d.Ahead, _ = strconv.Atoi(f[1])
+		}
+	}
+
+	// 结尾的 -- 是防止分支名和文件名撞名时 git 认不出该按哪个解释。
+	patch, err := r.runBytes("diff", "--no-color", "--find-renames", from, to, "--")
+	if err != nil {
+		return nil, err
+	}
+	// 只出文件清单，逐行内容交给 RangeFileDiff 按需取，原因见 parseDiffStats。
+	d.Files = parseDiffStats(string(patch))
+	return d, nil
+}
+
+// RangeFileDiff 取两个版本之间某一个文件的逐行差异。
+//
+// origPath 是这个文件在旧版本里的路径，只有发生过重命名时才不为空：
+// 单独限定一个路径去 diff，git 是认不出重命名的（会当成一新一删），
+// 把两侧路径都给它才能还原成一次重命名。
+func (r *Repo) RangeFileDiff(from, to, path, origPath string) ([]DiffFile, error) {
+	args := []string{"diff", "--no-color", "--find-renames", from, to, "--", path}
+	if origPath != "" && origPath != path {
+		args = append(args, origPath)
+	}
+	out, err := r.runBytes(args...)
+	if err != nil {
+		return nil, err
+	}
+	return parseUnifiedDiff(string(out)), nil
 }
 
 // FileDiff 读取工作区里单个文件的 diff。
@@ -131,10 +211,26 @@ func (r *Repo) untrackedDiff(path string) ([]DiffFile, error) {
 	return files, nil
 }
 
-// parseUnifiedDiff 解析 git 的 unified diff 输出。
+// parseUnifiedDiff 解析 git 的 unified diff 输出（含逐行内容）。
 //
 // 所有切片都返回空数组而不是 nil：JSON 里 null 和 [] 对前端是两回事。
 func parseUnifiedDiff(patch string) []DiffFile {
+	return parseDiff(patch, false)
+}
+
+// parseDiffStats 只数出每个文件改了多少行，不保留逐行内容。
+//
+// 用在"比较两个版本"上：两个相隔很远的版本之间可能有上千个文件、几十万行
+// （实测某仓库跨 500 个提交是 1094 个文件、25 万行），逐行内容一次性传给
+// 浏览器会直接卡死。所以先只给文件清单，用户点开哪个文件再单独取那一个。
+//
+// 顺带一提，这里不受 maxDiffLinesPerFile 限制：不存内容就没有内存压力，
+// 统计数字反而比含内容那条路径更准。
+func parseDiffStats(patch string) []DiffFile {
+	return parseDiff(patch, true)
+}
+
+func parseDiff(patch string, statsOnly bool) []DiffFile {
 	files := []DiffFile{}
 	var cur *DiffFile
 	var hunk *Hunk
@@ -142,7 +238,10 @@ func parseUnifiedDiff(patch string) []DiffFile {
 
 	flushHunk := func() {
 		if cur != nil && hunk != nil {
-			cur.Hunks = append(cur.Hunks, *hunk)
+			// 只统计的时候不留 hunk，Hunks 保持空数组。
+			if !statsOnly {
+				cur.Hunks = append(cur.Hunks, *hunk)
+			}
 			hunk = nil
 		}
 	}
@@ -200,6 +299,16 @@ func parseUnifiedDiff(patch string) []DiffFile {
 			continue
 
 		default:
+			if statsOnly {
+				// 只数增删行数，内容一概不留。
+				switch {
+				case strings.HasPrefix(line, "+"):
+					cur.Additions++
+				case strings.HasPrefix(line, "-"):
+					cur.Deletions++
+				}
+				continue
+			}
 			if cur.Truncated {
 				continue
 			}
