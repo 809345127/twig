@@ -1,103 +1,50 @@
 import SwiftUI
 
-// v1 用等宽文本 + 逐行着色渲染 patch，先把端到端链路跑通。
-// 网页版那套行内高亮 / 左右并排 / 语法着色是 diff2html 白送的，原生这边
-// 没有等价的现成库；后续打算内嵌一个 WKWebView 复用同一份 vendor 资源
-// （见交接文档"混合方案"），这里先占位。
+// diff 内容本身交给内嵌的 WKWebView（DiffWebView）画，这里只放工具条：
+// Unified/Split 切换、Ignore whitespace/comments 两个开关——跟网页版工具条
+// 是同一套选项，只是原生控件更好看、跟系统主题走。
 struct DiffPanelView: View {
     @EnvironmentObject var app: AppState
-
-    var lines: [DiffLine] {
-        parsePatch(app.diffPatch)
-    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
+                Picker("", selection: Binding(
+                    get: { app.diffViewMode },
+                    set: { app.diffViewMode = $0 }
+                )) {
+                    Text("Unified").tag(DiffViewMode.unified)
+                    Text("Split").tag(DiffViewMode.split)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 160)
+                .labelsHidden()
+
                 Toggle("Ignore whitespace", isOn: Binding(
                     get: { app.ignoreWhitespace },
                     set: { app.setIgnoreWhitespace($0) }
                 )).toggleStyle(.checkbox)
+                .help("Hide lines that differ only in whitespace — reindented blocks, tabs vs spaces, trailing spaces (git diff -b).")
+
                 Toggle("Ignore comments", isOn: Binding(
                     get: { app.ignoreComments },
                     set: { app.setIgnoreComments($0) }
                 )).toggleStyle(.checkbox)
+                .help("Hide changes where every changed line is a comment (git diff -I). A comment change within 3 lines of a code change still shows — it falls inside git's context window.")
+
                 Spacer()
-                if app.diffTruncated {
-                    Label("Truncated", systemImage: "scissors").font(.caption2).foregroundStyle(.orange)
-                }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             Divider()
 
-            if let err = app.diffError {
-                Text(err).foregroundStyle(.secondary).padding()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else if lines.isEmpty {
-                Text(app.diffPatch.isEmpty ? "No changes to show." : "")
-                    .foregroundStyle(.secondary).padding()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            if app.currentDiffRequest != nil {
+                DiffWebView(url: app.diffPageURL)
+                    .id(app.currentDiffRequest?.path)   // 换文件时强制换一个新的 WKWebView 状态锚点
             } else {
-                ScrollView([.horizontal, .vertical]) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                            Text(line.text)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(line.kind.foreground)
-                                .padding(.horizontal, 10)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(line.kind.background)
-                        }
-                    }
-                }
+                Text("Select a file to see the changes")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }
     }
-}
-
-struct DiffLine {
-    enum Kind {
-        case add, remove, hunk, meta, context
-        var foreground: Color {
-            switch self {
-            case .add: return .green
-            case .remove: return .red
-            case .hunk: return .blue
-            case .meta: return .secondary
-            case .context: return .primary
-            }
-        }
-        var background: Color {
-            switch self {
-            case .add: return .green.opacity(0.08)
-            case .remove: return .red.opacity(0.08)
-            default: return .clear
-            }
-        }
-    }
-    let text: String
-    let kind: Kind
-}
-
-func parsePatch(_ patch: String) -> [DiffLine] {
-    guard !patch.isEmpty else { return [] }
-    var out: [DiffLine] = []
-    for raw in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-        let line = String(raw)
-        if line.hasPrefix("diff --git") || line.hasPrefix("index ") ||
-            line.hasPrefix("--- ") || line.hasPrefix("+++ ") ||
-            line.hasPrefix("new file mode") || line.hasPrefix("deleted file mode") ||
-            line.hasPrefix("similarity index") || line.hasPrefix("rename from") || line.hasPrefix("rename to") {
-            out.append(.init(text: line, kind: .meta))
-        } else if line.hasPrefix("@@") {
-            out.append(.init(text: line, kind: .hunk))
-        } else if line.hasPrefix("+") {
-            out.append(.init(text: line, kind: .add))
-        } else if line.hasPrefix("-") {
-            out.append(.init(text: line, kind: .remove))
-        } else {
-            out.append(.init(text: line, kind: .context))
-        }
-    }
-    return out
 }

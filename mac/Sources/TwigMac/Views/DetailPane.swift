@@ -23,14 +23,36 @@ struct DetailPane: View {
             }
         case .compare(let from, let to):
             if let d = app.rangeDetail {
-                HSplitView {
-                    FileListView(
-                        files: d.files,
-                        selectedPath: app.selectedFile?.path,
-                        header: "\(String(from.prefix(8))) → \(String(to.prefix(8)))"
-                    ) { f in Task { await app.selectFile(f, inRange: (from, to)) } }
-                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
-                    DiffPanelView()
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Text("\(String(from.prefix(8))) → \(String(to.prefix(8)))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if d.behind > 0 && d.ahead > 0 {
+                            Text("diverged \(d.behind) / \(d.ahead)").font(.caption2).foregroundStyle(.orange)
+                        }
+                        Spacer()
+                        Button {
+                            Task { await app.loadCompare(from: to, to: from) }
+                        } label: {
+                            Label("Swap", systemImage: "arrow.left.arrow.right")
+                        }
+                        .buttonStyle(.borderless).font(.caption)
+                        Button("Exit compare") {
+                            Task { await app.selectCommit(to) }
+                        }
+                        .buttonStyle(.borderless).font(.caption)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    Divider()
+                    HSplitView {
+                        FileListView(
+                            files: d.files,
+                            selectedPath: app.selectedFile?.path,
+                            header: d.files.isEmpty ? "These two versions are identical" : "\(plural(d.files.count)) changed"
+                        ) { f in Task { await app.selectFile(f, inRange: (from, to)) } }
+                        .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
+                        DiffPanelView()
+                    }
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,6 +65,8 @@ struct DetailPane: View {
     private func shortHeader(hash: String, subject: String) -> String {
         "\(String(hash.prefix(8)))  \(subject)"
     }
+
+    private func plural(_ n: Int) -> String { n == 1 ? "1 file" : "\(n) files" }
 }
 
 struct FileListView: View {

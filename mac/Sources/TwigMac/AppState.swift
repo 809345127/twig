@@ -40,9 +40,16 @@ final class AppState: ObservableObject {
     @Published var commitDetail: CommitDetail?
     @Published var rangeDetail: RangeDetail?
     @Published var selectedFile: DiffFile?
-    @Published var diffPatch: String = ""
-    @Published var diffTruncated = false
-    @Published var diffError: String?
+
+    // MARK: - diff 面板
+    //
+    // ⚠️ diff 内容本身不再由 Swift 取——那条路交给内嵌的 WKWebView（DiffWebView）
+    // 自己去调 /api/patch、自己交给 diff2html 画，原生这边只负责算出"该看哪个文件"
+    // 并拼成一个 URL。这样 diff2html 那一整套（行内高亮/并排/语法着色/防误藏的六条
+    // 注释正则）一份实现都不用抄第二遍到 Swift 里，将来 Go 那边 /api/patch 的口径
+    // 变了，这边也不用跟着改。
+    @Published var currentDiffRequest: DiffRequest?
+    @Published var diffViewMode: DiffViewMode = .unified
 
     // MARK: - diff 过滤开关（跟浏览器版同名同义）
     @Published var ignoreWhitespace = false
@@ -56,7 +63,35 @@ final class AppState: ObservableObject {
 
     private var watchVersion: UInt64 = 0
     private var watchTask: Task<Void, Never>?
-    private var diffLoadSeq = 0   // 防串号：连着点几个文件，只认最后一次的结果
+
+    // diffPageURL 是要交给 DiffWebView 加载的完整地址：/diff.html + 全部参数。
+    // token 直接放进 URL（diff.html 是静态资源，本来就不需要 token 才能加载；
+    // 它自己发起的 /api/patch 请求会用这个 token 走 X-Twig-Token 头）。
+    var diffPageURL: URL? {
+        guard let req = currentDiffRequest, let client else { return nil }
+        guard var comps = URLComponents(url: client.baseURL.appendingPathComponent("diff.html"), resolvingAgainstBaseURL: false) else { return nil }
+        var items = [
+            URLQueryItem(name: "token", value: client.token),
+            URLQueryItem(name: "mode", value: req.mode.rawValue),
+            URLQueryItem(name: "path", value: req.path),
+            URLQueryItem(name: "view", value: diffViewMode == .split ? "split" : "unified"),
+        ]
+        if !req.orig.isEmpty { items.append(.init(name: "orig", value: req.orig)) }
+        if req.ignoreWhitespace { items.append(.init(name: "ws", value: "1")) }
+        if req.ignoreComments { items.append(.init(name: "ic", value: "1")) }
+        switch req.mode {
+        case .commit:
+            items.append(.init(name: "hash", value: req.hash))
+        case .range:
+            items.append(.init(name: "from", value: req.from))
+            items.append(.init(name: "to", value: req.to))
+        case .work:
+            items.append(.init(name: "staged", value: req.staged ? "1" : "0"))
+            items.append(.init(name: "untracked", value: req.untracked ? "1" : "0"))
+        }
+        comps.queryItems = items
+        return comps.url
+    }
 
     // MARK: - 启动
 
@@ -86,7 +121,11 @@ final class AppState: ObservableObject {
                 selectedRefs = Set(r.selectedRefs)
                 await refreshAll()
                 if let st = status, !st.clean {
-                    detailMode = .workingCopy
+                    // ⚠️ 不能只手写 detailMode = .workingCopy——那样进了工作区视图，
+                    // 却没人去选中第一个文件，diff 面板会一直停在"Select a file"，
+                    // 哪怕左边文件列表明明有几十上百个文件。真正做"选中第一个"这件事的
+                    // 是 showWorkingCopy()，必须调它，不能只赋值那个状态字段。
+                    await showWorkingCopy()
                 } else if let first = graph?.commits.first {
                     await selectCommit(first.hash)
                 }
@@ -170,7 +209,7 @@ final class AppState: ObservableObject {
             } else if let first = d.files.first {
                 await selectFile(first, inCommit: hash)
             } else {
-                selectedFile = nil; diffPatch = ""
+                selectedFile = nil; currentDiffRequest = nil
             }
         } catch {
             DebugLog.write("[twig] selectCommit 出错: \(error)")
@@ -199,7 +238,7 @@ final class AppState: ObservableObject {
             } else if let first = d.files.first {
                 await selectFile(first, inRange: (from, to))
             } else {
-                selectedFile = nil; diffPatch = ""
+                selectedFile = nil; currentDiffRequest = nil
             }
         } catch {
             lastError = error.localizedDescription
@@ -220,47 +259,34 @@ final class AppState: ObservableObject {
         } else if let first = all.first {
             await selectWorkingCopyFile(first)
         } else {
-            selectedFile = nil; diffPatch = ""
+            selectedFile = nil; currentDiffRequest = nil
         }
     }
 
     // MARK: - 选文件（三种模式殊途同归，最后都是发一次 /api/patch）
 
+    // 三种模式殊途同归：都只是把参数拼成一个 DiffRequest，交给 WebView 自己去取。
+    // 之所以不在这里直接 await 网络请求——WebView 里的 JS 会做同样的事，
+    // Swift 这层再做一遍纯粹是重复劳动，还多一条"两边结果可能不一致"的路。
     func selectFile(_ f: DiffFile, inCommit hash: String) async {
         selectedFile = f
-        await loadPatch(.init(mode: .commit, hash: hash, path: f.path, orig: f.origPath,
-                               ignoreWhitespace: ignoreWhitespace, ignoreComments: ignoreComments))
+        currentDiffRequest = .init(mode: .commit, hash: hash, path: f.path, orig: f.origPath,
+                                    ignoreWhitespace: ignoreWhitespace, ignoreComments: ignoreComments)
     }
 
     func selectFile(_ f: DiffFile, inRange range: (from: String, to: String)) async {
         selectedFile = f
-        await loadPatch(.init(mode: .range, from: range.from, to: range.to, path: f.path, orig: f.origPath,
-                               ignoreWhitespace: ignoreWhitespace, ignoreComments: ignoreComments))
+        currentDiffRequest = .init(mode: .range, from: range.from, to: range.to, path: f.path, orig: f.origPath,
+                                    ignoreWhitespace: ignoreWhitespace, ignoreComments: ignoreComments)
     }
 
     func selectWorkingCopyFile(_ f: FileChange) async {
-        let df = DiffFile(path: f.path, origPath: f.origPath, status: f.staged ? "M" : "M")
+        DebugLog.write("[twig] selectWorkingCopyFile \(f.path)")
+        let df = DiffFile(path: f.path, origPath: f.origPath, status: "M")
         selectedFile = df
-        await loadPatch(.init(mode: .work, path: f.path, orig: f.origPath,
-                               staged: f.staged, untracked: f.untracked,
-                               ignoreWhitespace: ignoreWhitespace, ignoreComments: ignoreComments))
-    }
-
-    private func loadPatch(_ req: DiffRequest) async {
-        guard let client else { return }
-        diffLoadSeq += 1
-        let seq = diffLoadSeq
-        diffError = nil
-        do {
-            let resp = try await client.patch(req)
-            guard seq == diffLoadSeq else { return }   // 串号防护：只认最后一次
-            diffPatch = resp.patch
-            diffTruncated = resp.truncated
-        } catch {
-            guard seq == diffLoadSeq else { return }
-            diffPatch = ""
-            diffError = error.localizedDescription
-        }
+        currentDiffRequest = .init(mode: .work, path: f.path, orig: f.origPath,
+                                    staged: f.staged, untracked: f.untracked,
+                                    ignoreWhitespace: ignoreWhitespace, ignoreComments: ignoreComments)
     }
 
     // MARK: - 分支勾选 / 视图选项
@@ -313,7 +339,7 @@ final class AppState: ObservableObject {
             selectedFile = nil
             compareAnchor = nil
             await refreshAll()
-            if let st = status, !st.clean { detailMode = .workingCopy }
+            if let st = status, !st.clean { await showWorkingCopy() }
             else if let first = graph?.commits.first { await selectCommit(first.hash) }
         } catch {
             lastError = error.localizedDescription

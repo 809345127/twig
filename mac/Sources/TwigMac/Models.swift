@@ -199,6 +199,11 @@ enum PatchMode: String {
     case commit, range, work
 }
 
+// DiffViewMode 对应 diff.html 的 view 参数：unified 上下堆叠 / split 左右并排。
+enum DiffViewMode {
+    case unified, split
+}
+
 // 一次要取哪个文件的 diff：三种模式共用一套参数，跟后端 /api/patch 的口径一致。
 struct DiffRequest: Equatable {
     var mode: PatchMode

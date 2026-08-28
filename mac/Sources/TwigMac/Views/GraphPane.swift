@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // 图区几何常量，跟 web/app.js 的 ROW_H / LANE_W / DOT_R / GRAPH_PAD 逐个对齐。
 enum GraphMetrics {
@@ -53,7 +54,15 @@ struct GraphPane: View {
             },
             set: { newValue in
                 guard let hash = newValue else { return }
-                Task { await app.selectCommit(hash) }
+                // 按住 Cmd 点第二个提交 = 比较两个版本，跟网页版的手势一致。
+                // List 的 selection 绑定本身不带修饰键信息，只能在这里读一下
+                // NSEvent 当前的按键状态——这是 AppKit 上判断"点击时是否按着某个键"
+                // 的标准做法，不需要额外的手势识别器。
+                if NSEvent.modifierFlags.contains(.command) {
+                    Task { await app.compareWith(hash) }
+                } else {
+                    Task { await app.selectCommit(hash) }
+                }
             }
         )
     }
