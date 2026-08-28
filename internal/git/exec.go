@@ -131,3 +131,62 @@ func (r *Repo) RunUser(args ...string) (string, error) {
 	}
 	return combined.String(), nil
 }
+
+// boundedBuffer 攒 git 的 stdout，但最多攒 max 字节，超出的部分直接丢掉。
+//
+// 为什么需要：git 的输出可能极大，而我们最终只要开头那几千行。最典型的是工作区里
+// 放着一个几百 MB 的文本文件（SQL dump、日志），`diff --no-index` 会把整份内容当成
+// 新增行吐出来；全量攒进内存就是为了一个几百 KB 的响应吃掉几百 MB。
+// 实测 300MB 的文件会把进程 RSS 顶到 690MB、耗时 39 秒。
+//
+// ⚠️ Write 必须始终报告"全部写入"。返回 n < len(p) 会被 os/exec 当成 io 错误，
+// 把整条命令判失败——那样非但没省内存，还把功能弄坏了。
+type boundedBuffer struct {
+	buf     bytes.Buffer
+	max     int
+	overrun bool // 是否真的丢过东西
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if room := b.max - b.buf.Len(); room > 0 {
+		if len(p) > room {
+			p, b.overrun = p[:room], true
+		}
+		b.buf.Write(p)
+	} else if n > 0 {
+		b.overrun = true
+	}
+	return n, nil
+}
+
+// runBytesLimit 跟 runBytes 一样，但最多只收 max 字节的 stdout。
+// 第二个返回值说明有没有因为超限被截掉——调用方要据此告诉界面"这份是截断的"。
+func (r *Repo) runBytesLimit(max int, args ...string) ([]byte, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, gitPrefix...), args...)...)
+	cmd.Dir = r.Dir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_PAGER=cat",
+		"GIT_OPTIONAL_LOCKS=0",
+		"LC_ALL=C",
+	)
+
+	stdout := &boundedBuffer{max: max}
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, false, &ErrGit{Args: args, Stderr: "git command timed out (120s)", Err: err}
+		}
+		// 跟 runBytes 同一个理由：失败时也要把已产出的 stdout 交回去，
+		// --no-index 在"有差异"时退出码就是 1，那份输出是有效的。
+		return stdout.buf.Bytes(), stdout.overrun, &ErrGit{Args: args, Stderr: stderr.String(), Err: err}
+	}
+	return stdout.buf.Bytes(), stdout.overrun, nil
+}

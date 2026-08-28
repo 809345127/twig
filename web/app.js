@@ -161,6 +161,14 @@ async function openRepo(path) {
     S.selCommit = null;
     S.detail = null;
     S.wipMode = false;
+    S.cmpA = S.cmpB = S.cmpDetail = S.cmpFile = null;
+    // 旧仓库那边可能还有请求在飞（大合并提交的 /api/commit 要一秒多）。
+    // 推一次票号把它们作废，再把下方面板恢复成空态——否则旧仓库的提交详情
+    // 会画到新仓库的界面上。
+    ++detailSeq;
+    $('commitDetail').hidden = true;
+    $('wipDetail').hidden = true;
+    $('detailEmpty').hidden = false;
     await refreshAll();
     setStatus('Opened ' + info.path);
   } catch (e) {
@@ -1129,7 +1137,7 @@ function renderWip() {
 
       // renderWip 末尾会自己拉 diff，这里不用再拉一次。
       item.onclick = () => {
-        S.wipFile = { path: f.path, staged, untracked: !!f.untracked };
+        S.wipFile = { path: f.path, origPath: f.origPath || '', staged, untracked: !!f.untracked };
         renderWip();
       };
       box.append(item);
@@ -1146,7 +1154,7 @@ function renderWip() {
   if (!stillThere) {
     const first = unstaged[0] || st.staged[0];
     S.wipFile = first
-      ? { path: first.path, staged: !unstaged.length, untracked: !!first.untracked }
+      ? { path: first.path, origPath: first.origPath || '', staged: !unstaged.length, untracked: !!first.untracked }
       : null;
   }
   loadWipDiff();
@@ -1167,10 +1175,12 @@ function mkMini(text, onclick) {
 function loadWipDiff() {
   const box = $('wipDiff');
   if (!S.wipFile) { showDiffNote(box, 'No changes in the working copy'); return; }
-  const { path, staged, untracked } = S.wipFile;
+  const { path, origPath, staged, untracked } = S.wipFile;
   loadPatch(box, {
     mode: 'work',
     path,
+    // 暂存过的重命名要把两侧路径都给后端，否则会显示成"整个文件都是新增"。
+    orig: origPath || '',
     staged: staged ? 1 : 0,
     untracked: untracked ? 1 : 0,
   });

@@ -1,6 +1,8 @@
 package git
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -33,8 +35,9 @@ func TestIgnoreWhitespaceFlagPosition(t *testing.T) {
 		"commit":        commitFilePatchArgs("abc123", "a.go", "", opt),
 		"commit+rename": commitFilePatchArgs("abc123", "new.go", "old.go", opt),
 		"range":         rangeFilePatchArgs("old", "new", "a.go", "", opt),
-		"work":          workFilePatchArgs("a.go", false, opt),
-		"work+staged":   workFilePatchArgs("a.go", true, opt),
+		"work":          workFilePatchArgs("a.go", "", false, opt),
+		"work+staged":   workFilePatchArgs("a.go", "", true, opt),
+		"work+rename":   workFilePatchArgs("new.go", "old.go", true, opt),
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -64,7 +67,7 @@ func TestFilePatchArgsWithoutOptions(t *testing.T) {
 	for name, args := range map[string][]string{
 		"commit": commitFilePatchArgs("abc123", "a.go", "", DiffOptions{}),
 		"range":  rangeFilePatchArgs("old", "new", "a.go", "", DiffOptions{}),
-		"work":   workFilePatchArgs("a.go", false, DiffOptions{}),
+		"work":   workFilePatchArgs("a.go", "", false, DiffOptions{}),
 	} {
 		if contains(args, ignoreWhitespaceFlag) {
 			t.Errorf("%s：没开开关却带上了 %s：%v", name, ignoreWhitespaceFlag, args)
@@ -276,7 +279,7 @@ func TestIgnoreCommentsFlagPosition(t *testing.T) {
 		for scene, args := range map[string][]string{
 			"commit": commitFilePatchArgs("abc123", "a.go", "", opt),
 			"range":  rangeFilePatchArgs("old", "new", "a.go", "", opt),
-			"work":   workFilePatchArgs("a.go", true, opt),
+			"work":   workFilePatchArgs("a.go", "", true, opt),
 		} {
 			sepAt := len(args)
 			for i, a := range args {
@@ -346,5 +349,118 @@ func TestCommentPatternsNeverMatchCode(t *testing.T) {
 		if !hit {
 			t.Errorf("注释没被认出来：%q", line)
 		}
+	}
+}
+
+// 暂存过的重命名必须把两侧路径都给 git，否则它认不出是重命名、
+// 会把整个文件当成新增行显示出来（用户实际会碰到：改个文件名 + 点 Stage 就复现）。
+func TestWorkFilePatchArgsRename(t *testing.T) {
+	got := workFilePatchArgs("new.go", "old.go", true, DiffOptions{})
+	if n := len(got); got[n-3] != "--" || got[n-2] != "new.go" || got[n-1] != "old.go" {
+		t.Errorf("重命名要给两侧路径：%v", got)
+	}
+
+	// 没重命名时不许多给一个路径，否则 git 会把它当成第二个 pathspec。
+	got = workFilePatchArgs("a.go", "", true, DiffOptions{})
+	if n := len(got); got[n-2] != "--" || got[n-1] != "a.go" {
+		t.Errorf("没重命名时只该给一个路径：%v", got)
+	}
+}
+
+// rename / copy 行上的路径也会被 git 加引号转义，必须还原。
+// 而且不能用会 TrimSpace 的那个版本——结尾真带空格的文件名 git 不加引号，一 trim 就错。
+func TestParseDiffStatsQuotedRename(t *testing.T) {
+	patch := strings.Join([]string{
+		`diff --git "a/old	name.txt" "b/new	name.txt"`,
+		"similarity index 95%",
+		`rename from "old	name.txt"`,
+		`rename to "new	name.txt"`,
+		"",
+	}, "\n")
+	files := parseDiffStats(patch)
+	if len(files) != 1 {
+		t.Fatalf("期望 1 个文件，得到 %d 个", len(files))
+	}
+	if files[0].Path != "new\tname.txt" || files[0].OrigPath != "old\tname.txt" {
+		t.Errorf("带引号的重命名路径没还原：%+v", files[0])
+	}
+	if files[0].Status != "R" {
+		t.Errorf("状态应为 R，得到 %q", files[0].Status)
+	}
+}
+
+func TestUnquoteIfQuotedKeepsTrailingSpace(t *testing.T) {
+	// git 对结尾带空格的文件名是不加引号的，所以这里一个字符都不该动。
+	if got := unquoteIfQuoted("trailing .txt "); got != "trailing .txt " {
+		t.Errorf("结尾空格被吃掉了：%q", got)
+	}
+	if got := unquoteIfQuoted(`"quo\"te.txt"`); got != `quo"te.txt` {
+		t.Errorf("引号没还原：%q", got)
+	}
+}
+
+// 未跟踪文件那条路是用 git diff --no-index 走文件系统的，没有 git 自己的"越出仓库就拒绝"
+// 兜底，所以路径约束得自己做。
+//
+// ⚠️ 这个测试盯的是一个真踩过的坑：第一版校验的是 filepath.Join(dir, path)，而绝对路径
+// Join 之后会变成 <repo>/etc/hosts —— 检查通过了，可传给 git 的仍是原始的 /etc/hosts，
+// 等于没拦。校验的对象必须和交给 git 的那个是同一个。
+func TestUntrackedPatchRejectsOutsidePaths(t *testing.T) {
+	repo := &Repo{Dir: t.TempDir()}
+	for _, p := range []string{
+		"/etc/hosts",
+		"/Users/somebody/.gitconfig",
+		"../outside.txt",
+		"../../etc/hosts",
+		"sub/../../outside.txt",
+	} {
+		if _, _, err := repo.untrackedPatch(p); err == nil {
+			t.Errorf("越界路径没被拦住：%q", p)
+		}
+	}
+}
+
+// git status 会把嵌套仓库、以及指向目录的软链当成一条"目录"记录列出来，
+// 直接丢给 --no-index 会报一个根本不存在的文件名，看着像内部错误。
+func TestUntrackedPatchRejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := &Repo{Dir: dir}
+	_, _, err := repo.untrackedPatch("nested")
+	if err == nil {
+		t.Fatal("目录没被拦住")
+	}
+	if !strings.Contains(err.Error(), "nested repository") {
+		t.Errorf("报错该说人话，得到：%v", err)
+	}
+}
+
+// boundedBuffer 只收前 max 字节，但必须始终报告"全部写入"——
+// 返回 n < len(p) 会被 os/exec 当成 io 错误，把整条 git 命令判失败。
+func TestBoundedBuffer(t *testing.T) {
+	b := &boundedBuffer{max: 10}
+	n, err := b.Write([]byte("0123456789ABCDEF"))
+	if n != 16 || err != nil {
+		t.Fatalf("必须报告全部写入：n=%d err=%v", n, err)
+	}
+	if got := b.buf.String(); got != "0123456789" {
+		t.Errorf("只该留前 10 字节，得到 %q", got)
+	}
+	if !b.overrun {
+		t.Error("超限了却没标记")
+	}
+
+	// 再写还是不报错，也不再攒。
+	if n, err := b.Write([]byte("more")); n != 4 || err != nil || b.buf.Len() != 10 {
+		t.Errorf("满了之后不该再攒：n=%d err=%v len=%d", n, err, b.buf.Len())
+	}
+
+	// 没到上限时不该标记截断。
+	small := &boundedBuffer{max: 10}
+	small.Write([]byte("abc"))
+	if small.overrun {
+		t.Error("没超限却标了截断")
 	}
 }

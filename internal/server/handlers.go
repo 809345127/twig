@@ -394,7 +394,7 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		patch, truncated, err = repo.RangeFilePatch(from, to, path, orig, opt)
 
 	case "work":
-		patch, truncated, err = repo.WorkFilePatch(path, q.Get("staged") == "1", q.Get("untracked") == "1", opt)
+		patch, truncated, err = repo.WorkFilePatch(path, orig, q.Get("staged") == "1", q.Get("untracked") == "1", opt)
 
 	default:
 		writeErr(w, fmt.Errorf("unknown mode %q (want commit / range / work)", mode))

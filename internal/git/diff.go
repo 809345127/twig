@@ -1,7 +1,10 @@
 package git
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -42,6 +45,13 @@ type DiffFile struct {
 // 并排视图还要再翻一倍。截断的是尾部，`diff --git` 那几行文件头留着，
 // diff2html 照样认得出这是哪个文件、什么语言。
 const maxPatchLines = 4000
+
+// maxPatchBytes 是单次取 patch 最多从 git 收多少字节。
+//
+// 按行数拦不住"行数不多但每行极长"的文件（压缩过的 JS、单行 JSON、CSV），
+// 所以再加一道字节闸。8MB 对 4000 行来说是每行 2KB，正常代码远远用不到；
+// 到顶了就跟行数超限一样标 truncated，界面上照样有提示。
+const maxPatchBytes = 8 << 20
 
 // DiffOptions 控制 diff 怎么算，所有取 diff 的地方都吃它。
 type DiffOptions struct {
@@ -240,12 +250,12 @@ func (r *Repo) RangeFilePatch(from, to, path, origPath string, opt DiffOptions) 
 // WorkFilePatch 取工作区里某一个文件的原始 patch 文本。
 //
 // staged 为 true 时看的是暂存区与 HEAD 的差异，否则是工作区与暂存区的差异。
-func (r *Repo) WorkFilePatch(path string, staged, untracked bool, opt DiffOptions) (string, bool, error) {
+func (r *Repo) WorkFilePatch(path, origPath string, staged, untracked bool, opt DiffOptions) (string, bool, error) {
 	if untracked && !staged {
 		// 未跟踪的文件是跟 /dev/null 比，整份都是新增行，忽略空白在这里没有任何影响，不用传。
 		return r.untrackedPatch(path)
 	}
-	return r.patchText(workFilePatchArgs(path, staged, opt))
+	return r.patchText(workFilePatchArgs(path, origPath, staged, opt))
 }
 
 // —— 单文件 patch 的参数拼装 ——
@@ -268,13 +278,15 @@ func rangeFilePatchArgs(from, to, path, origPath string, opt DiffOptions) []stri
 	return append(rangePatchArgs(from, to, opt), pathspec(path, origPath)...)
 }
 
-func workFilePatchArgs(path string, staged bool, opt DiffOptions) []string {
+func workFilePatchArgs(path, origPath string, staged bool, opt DiffOptions) []string {
 	args := []string{"diff", "--no-color", "--find-renames"}
 	args = append(args, opt.args()...)
 	if staged {
 		args = append(args, "--cached")
 	}
-	return append(args, pathspec(path, "")...)
+	// 两侧路径都要给，否则 git 认不出这是重命名，会当成"整个文件新增"。
+	// 暂存过的重命名（git status 里的 R）走的就是这条路，见 pathspec 的注释。
+	return append(args, pathspec(path, origPath)...)
 }
 
 // commitPatchArgs 拼出"看一个提交"的 git 命令。
@@ -311,13 +323,24 @@ func pathspec(path, origPath string) []string {
 }
 
 // patchText 跑一次 git 并把输出整理成能直接交给前端的 patch 文本。
+//
+// 用带上限的读法：反正只要开头 maxPatchLines 行，没必要把 git 的整份输出攒进内存。
+// 上限按字节设在 maxPatchBytes，防的是"行数不多但每行极长"的情形（压缩过的 JS、
+// 单行 JSON），那种光按行数拦不住。
 func (r *Repo) patchText(args []string) (string, bool, error) {
-	out, err := r.runBytes(args...)
+	out, capped, err := r.runBytesLimit(maxPatchBytes, args...)
 	if err != nil {
 		return "", false, err
 	}
+	if capped {
+		// 按字节切的，最后一行多半是半截的，退到上一个换行为止，
+		// 免得把半行喂给 diff2html。
+		if i := bytes.LastIndexByte(out, '\n'); i >= 0 {
+			out = out[:i+1]
+		}
+	}
 	patch, truncated := truncatePatch(string(out))
-	return patch, truncated, nil
+	return patch, truncated || capped, nil
 }
 
 // untrackedPatch 把一个未跟踪的新文件呈现成"整个文件都是新增行"。
@@ -325,11 +348,43 @@ func (r *Repo) patchText(args []string) (string, bool, error) {
 // git diff 看不到未跟踪文件，这里用 --no-index 跟 /dev/null 比一次。
 // 注意 --no-index 在发现差异时退出码是 1，这属于正常输出而不是失败。
 func (r *Repo) untrackedPatch(path string) (string, bool, error) {
-	out, err := r.runBytes("diff", "--no-index", "--no-color", "--", "/dev/null", path)
+	// git status 会把**嵌套的 git 仓库**（vendored 依赖、随手 clone 的、没注册的 submodule）
+	// 和指向目录的软链，当成一条"目录"记录列出来。直接丢给 --no-index，git 会拿 /dev/null
+	// 去配 <dir>/null，报一个根本不存在的文件名，看着像内部错误。这里先拦掉，说句人话。
+	//
+	// 顺带把路径约束在仓库内：--no-index 是按文件系统路径解析的，不像其它两条路那样有
+	// git 自己的"越出仓库就拒绝"兜底。正常调用的 path 都来自 git status，本来就在仓库内，
+	// 这条只是防止以后有人从别处把路径传进来。
+	//
+	// ⚠️ 校验的对象必须和交给 git 的那个是同一个。第一版只校验了 filepath.Join(r.Dir, path)，
+	// 而绝对路径经 Join 之后会变成 <repo>/etc/hosts —— 检查通过了，可传给 git 的仍是原始的
+	// /etc/hosts，等于没拦。所以先把绝对路径直接拒掉，再查 .. 越界。
+	// （path 正常都来自 git status，一定是仓库内的相对路径，这两条不会误伤。）
+	if filepath.IsAbs(path) {
+		return "", false, &ErrGit{Stderr: "path must be relative to the repository: " + path}
+	}
+	full := filepath.Join(r.Dir, path)
+	rel, relErr := filepath.Rel(r.Dir, full)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false, &ErrGit{Stderr: "path is outside the repository: " + path}
+	}
+	if fi, err := os.Stat(full); err == nil && fi.IsDir() {
+		return "", false, &ErrGit{Stderr: "this is a nested repository (or a link to a directory), not a file — open it as its own repository to see its changes"}
+	}
+	// ⚠️ 这里必须用带上限的读法，不能用 runBytes。工作区里放着一个几百 MB 的文本文件
+	// （SQL dump、日志）时，--no-index 会把整份内容当成新增行吐出来——实测 300MB 的文件
+	// 会把进程 RSS 顶到 700MB 以上，而我们最终只要开头 4000 行、响应才 242KB。
+	// 这条路是最容易撞上的：工作区文件列表会自动选中第一个文件，点都不用点。
+	out, capped, err := r.runBytesLimit(maxPatchBytes, "diff", "--no-index", "--no-color", "--", "/dev/null", path)
 	if err != nil {
 		var ge *ErrGit
 		if !errors.As(err, &ge) || strings.TrimSpace(ge.Stderr) != "" {
 			return "", false, err
+		}
+	}
+	if capped {
+		if i := bytes.LastIndexByte(out, '\n'); i >= 0 {
+			out = out[:i+1]
 		}
 	}
 	// 早先这里把 "--- a/dev/null" 改写成 "--- /dev/null"，已删掉：实测 git 2.50.1 的
@@ -337,7 +392,7 @@ func (r *Repo) untrackedPatch(path string) (string, bool, error) {
 	// 一次都不会触发。留着还有害——它是 Replace(..., 1)，只替换第一处出现的地方，而文件头
 	// 里既然没有，唯一能命中的就是**文件内容里**恰好长这样的一行，等于把用户的内容改掉。
 	p, truncated := truncatePatch(string(out))
-	return p, truncated, nil
+	return p, truncated || capped, nil
 }
 
 // truncatePatch 把过大的 patch 截到 maxPatchLines 行，按整行切，不留半行。
@@ -400,15 +455,19 @@ func parseDiffStats(patch string) []DiffFile {
 				cur.Status = "A"
 			case strings.HasPrefix(line, "deleted file mode"):
 				cur.Status = "D"
+			// ⚠️ 这三行的路径也会被 git 加引号转义（名字里有引号 / 反斜杠 / 制表符 / 换行时），
+			// 必须还原，否则清单里显示的是转义后的乱名、点开还找不到文件。
+			// 不能直接用 unquotePath —— 它会 TrimSpace，而结尾真带空格的文件名 git 是不加
+			// 引号的，一 trim 就把名字改错了。
 			case strings.HasPrefix(line, "rename from "):
 				cur.Status = "R"
-				cur.OrigPath = strings.TrimPrefix(line, "rename from ")
+				cur.OrigPath = unquoteIfQuoted(strings.TrimPrefix(line, "rename from "))
 			case strings.HasPrefix(line, "rename to "):
 				cur.Status = "R"
-				cur.Path = strings.TrimPrefix(line, "rename to ")
+				cur.Path = unquoteIfQuoted(strings.TrimPrefix(line, "rename to "))
 			case strings.HasPrefix(line, "copy from "):
 				cur.Status = "C"
-				cur.OrigPath = strings.TrimPrefix(line, "copy from ")
+				cur.OrigPath = unquoteIfQuoted(strings.TrimPrefix(line, "copy from "))
 			case strings.HasPrefix(line, "Binary files "), strings.HasPrefix(line, "GIT binary patch"):
 				cur.Binary = true
 			}
@@ -481,7 +540,14 @@ func stripSidePrefix(p string) string {
 // 关掉 core.quotePath 之后中文之类的非 ASCII 路径已经是原样输出了，
 // 但含引号、制表符、换行的路径 git 仍然会加引号并转义，这里还得管。
 func unquotePath(p string) string {
-	p = strings.TrimSpace(p)
+	return unquoteIfQuoted(strings.TrimSpace(p))
+}
+
+// unquoteIfQuoted 只做"带引号就脱引号"，**不动首尾空白**。
+//
+// rename / copy 那几行用它而不是 unquotePath：那些行的路径是整行剩下的部分，
+// 本来就没有多余空白，而文件名结尾真带空格时 git 不加引号，TrimSpace 会把名字改错。
+func unquoteIfQuoted(p string) string {
 	if len(p) >= 2 && p[0] == '"' && p[len(p)-1] == '"' {
 		if s, err := strconv.Unquote(p); err == nil {
 			return s
