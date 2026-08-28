@@ -372,6 +372,14 @@ input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-colo
    看上去就像"整段都变了"——正是要避免的那种错觉。按 4 来。 */
 .d2h {
   font-size: 12px; tab-size: 4; -moz-tab-size: 4;
+  /* ⚠️ 这条 position: relative 不能删，删了行号会跟内容脱节。
+     diff2html 把行号格写成了 position: absolute（unified 的 .d2h-code-linenumber、
+     并排的 .d2h-code-side-linenumber 都是），而它自己的样式表里一条 position: relative
+     都没有。绝对定位是相对"最近的已定位祖先"摆的——没有的话就挂到滚动容器外面去了，
+     于是内容跟着滚、行号钉在原地，错位量精确等于滚动距离（实测滚 600px 就差 600px）。
+     diff2html 默认场景是整个页面滚动，那样不会暴露；twig 是让 diff 面板自己滚，就暴露了。
+     给这个 host 一个定位基准，行号就回到滚动内容里面了。 */
+  position: relative;
   /* diff2html 自带的 --d2h-dim-color 是 rgba(0,0,0,.3)，对比度只有 2.1:1，
      浅色模式下行号和 @@ 那几行几乎看不清。换成本项目的次要文字色。
      深色模式不用管：它那 3 个消费者会被 d2h-auto-color-scheme 改指到 --d2h-dark-dim-color。 */
