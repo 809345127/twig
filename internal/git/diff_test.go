@@ -464,3 +464,52 @@ func TestBoundedBuffer(t *testing.T) {
 		t.Error("没超限却标了截断")
 	}
 }
+
+// runLines 是流式读的，超长行（压缩过的 JS、单行 JSON、CSV）在缓冲区里放不下，
+// 会被分成好几段读出来。⚠️ 这时候**只能喂第一段**，剩下的必须丢掉——
+// 每段都喂的话，一行会被数成好几行，行数统计直接错。这个测试就钉这一条。
+func TestCommitDetailCountsLongLinesOnce(t *testing.T) {
+	dir := t.TempDir()
+	repo := &Repo{Dir: dir}
+	run := func(args ...string) {
+		t.Helper()
+		if _, err := repo.run(append([]string{"-c", "user.email=t@t", "-c", "user.name=t"}, args...)...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if _, err := repo.run("init", "-q", "."); err != nil {
+		t.Fatal(err)
+	}
+	// 三行：两行普通的，中间一行 512KB（远超 64KB 的读缓冲）。
+	//
+	// ⚠️ 内容故意用 '+'。用 'x' 之类的字符测不出问题：那样续段以 'x' 开头、
+	// 本来就不匹配增删行的判断，就算每段都喂也不会多计，测试会假通过。
+	// 换成 '+' 之后每一段都长得像"新增行"，喂错了立刻数错——base64、
+	// 压缩过的 JS 里本来就到处是 '+'，这不是造出来的极端情况。
+	long := strings.Repeat("+", 512*1024)
+	body := "first\n" + long + "\nlast\n"
+	if err := os.WriteFile(filepath.Join(dir, "big.txt"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "add big")
+
+	head, err := repo.run("rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := repo.CommitDetail(strings.TrimSpace(head), DiffOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Files) != 1 {
+		t.Fatalf("期望 1 个文件，得到 %d 个：%+v", len(d.Files), d.Files)
+	}
+	// 三行新增，一行都不能多——多出来就说明超长行被数了不止一次。
+	if got := d.Files[0].Additions; got != 3 {
+		t.Errorf("超长行被重复计数了：新增 %d 行，期望 3 行", got)
+	}
+	if d.Files[0].Status != "A" || d.Files[0].Path != "big.txt" {
+		t.Errorf("文件信息不对：%+v", d.Files[0])
+	}
+}

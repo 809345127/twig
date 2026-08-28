@@ -5,10 +5,12 @@
 package git
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -189,4 +191,68 @@ func (r *Repo) runBytesLimit(max int, args ...string) ([]byte, bool, error) {
 		return stdout.buf.Bytes(), stdout.overrun, &ErrGit{Args: args, Stderr: stderr.String(), Err: err}
 	}
 	return stdout.buf.Bytes(), stdout.overrun, nil
+}
+
+// runLines 跑一条 git 命令，把 stdout 一行一行喂给 fn，**不把整份输出攒进内存**。
+//
+// 用在"只数数、不留内容"的地方（文件清单）。git 的 patch 输出可能有几百 MB，
+// 而我们要的只是每个文件改了多少行——先攒后解析等于为了几百字节的响应吃掉几百 MB。
+//
+// ⚠️ 超长行（压缩过的 JS、单行 JSON、CSV）要能扛住。这里用 ReadSlice：缓冲区满了就把
+// **已读到的前缀**喂出去（判断行类型只需要开头十来个字节：diff --git / @@ / + / -），
+// 剩下的整段丢弃、绝不喂第二次——否则一行会被数成很多行。所以内存是有上限的，
+// 跟行有多长无关。
+func (r *Repo) runLines(fn func(line string), args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, gitPrefix...), args...)...)
+	cmd.Dir = r.Dir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_PAGER=cat",
+		"GIT_OPTIONAL_LOCKS=0",
+		"LC_ALL=C",
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return &ErrGit{Args: args, Stderr: err.Error(), Err: err}
+	}
+	if err := cmd.Start(); err != nil {
+		return &ErrGit{Args: args, Stderr: err.Error(), Err: err}
+	}
+
+	br := bufio.NewReaderSize(pipe, 64*1024)
+	for {
+		chunk, rerr := br.ReadSlice('\n')
+		if rerr == bufio.ErrBufferFull {
+			// 超长行：前缀足够判类型，喂一次；剩下的读完丢掉，不再喂。
+			fn(string(chunk))
+			for rerr == bufio.ErrBufferFull {
+				_, rerr = br.ReadSlice('\n')
+			}
+			if rerr != nil {
+				break
+			}
+			continue
+		}
+		if len(chunk) > 0 {
+			fn(strings.TrimSuffix(string(chunk), "\n"))
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	// 一定要把管道读干再 Wait，否则 git 可能卡在写 stdout 上。
+	_, _ = io.Copy(io.Discard, pipe)
+
+	if werr := cmd.Wait(); werr != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return &ErrGit{Args: args, Stderr: "git command timed out (120s)", Err: werr}
+		}
+		return &ErrGit{Args: args, Stderr: stderr.String(), Err: werr}
+	}
+	return nil
 }

@@ -179,11 +179,13 @@ func (r *Repo) CommitDetail(hash string, opt DiffOptions) (*CommitDetail, error)
 	if err != nil {
 		return nil, err
 	}
-	patch, err := r.runBytes(commitPatchArgs(hash, opt)...)
-	if err != nil {
+	// 边读边数，不把整份 patch 攒进内存——一个提交里加了个大文本文件时，
+	// git 的输出能到几百 MB，而我们只要一串数字。
+	var st diffStats
+	if err := r.runLines(st.feed, commitPatchArgs(hash, opt)...); err != nil {
 		return nil, err
 	}
-	d.Files = parseDiffStats(string(patch))
+	d.Files = st.done()
 	return d, nil
 }
 
@@ -227,13 +229,14 @@ func (r *Repo) RangeDiff(from, to string, opt DiffOptions) (*RangeDetail, error)
 
 	// 结尾的 -- 是防止分支名和文件名撞名时 git 认不出该按哪个解释（log.go 里同理）。
 	// 它不能挪进 rangePatchArgs：RangeFilePatch 后面还要接 pathspec()，那里自带一个 --。
-	patch, err := r.runBytes(append(rangePatchArgs(from, to, opt), "--")...)
-	if err != nil {
+	// 同样边读边数，理由见 CommitDetail。
+	var st diffStats
+	if err := r.runLines(st.feed, append(rangePatchArgs(from, to, opt), "--")...); err != nil {
 		return nil, err
 	}
 	// 两个相隔很远的版本之间可能有上千个文件、几十万行（实测某仓库跨 500 个提交是
 	// 1094 个文件、25 万行），所以这里只数个数，逐行内容点开哪个文件再单独取。
-	d.Files = parseDiffStats(string(patch))
+	d.Files = st.done()
 	return d, nil
 }
 
@@ -416,70 +419,96 @@ func truncatePatch(patch string) (string, bool) {
 
 // parseDiffStats 从 git 的 patch 输出里数出文件清单：每个文件是什么状态、改了多少行。
 //
-// 只数不留内容，所以不受大小限制——几十万行的 patch 数出来也就是一串数字。
+// 这是 diffStats 的一次性封装，方便测试和小输入直接用。真正取 diff 的地方走
+// 增量的 diffStats，不把整份 patch 攒进内存——原因见 diffStats 的注释。
 func parseDiffStats(patch string) []DiffFile {
-	files := []DiffFile{}
-	var cur *DiffFile
-	inHunk := false
-
-	flush := func() {
-		if cur != nil {
-			files = append(files, *cur)
-			cur = nil
-		}
-	}
-
+	var st diffStats
 	for _, line := range strings.Split(patch, "\n") {
-		switch {
-		case strings.HasPrefix(line, "diff --git "):
-			flush()
-			inHunk = false
-			a, b := parseDiffGitHeader(line)
-			cur = &DiffFile{Path: b, Status: "M"}
-			if a != b && a != "" {
-				cur.OrigPath = a
-			}
-
-		case cur == nil:
-			// 文件头之前的内容（比如 commit 头），忽略。
-			continue
-
-		case strings.HasPrefix(line, "@@"):
-			inHunk = true
-
-		case !inHunk:
-			// index / --- / +++ 这些行也以 + - 开头，不能拿去数行数，
-			// 所以要等看到 @@ 才开始数。
-			switch {
-			case strings.HasPrefix(line, "new file mode"):
-				cur.Status = "A"
-			case strings.HasPrefix(line, "deleted file mode"):
-				cur.Status = "D"
-			// ⚠️ 这三行的路径也会被 git 加引号转义（名字里有引号 / 反斜杠 / 制表符 / 换行时），
-			// 必须还原，否则清单里显示的是转义后的乱名、点开还找不到文件。
-			// 不能直接用 unquotePath —— 它会 TrimSpace，而结尾真带空格的文件名 git 是不加
-			// 引号的，一 trim 就把名字改错了。
-			case strings.HasPrefix(line, "rename from "):
-				cur.Status = "R"
-				cur.OrigPath = unquoteIfQuoted(strings.TrimPrefix(line, "rename from "))
-			case strings.HasPrefix(line, "rename to "):
-				cur.Status = "R"
-				cur.Path = unquoteIfQuoted(strings.TrimPrefix(line, "rename to "))
-			case strings.HasPrefix(line, "copy from "):
-				cur.Status = "C"
-				cur.OrigPath = unquoteIfQuoted(strings.TrimPrefix(line, "copy from "))
-			case strings.HasPrefix(line, "Binary files "), strings.HasPrefix(line, "GIT binary patch"):
-				cur.Binary = true
-			}
-
-		case strings.HasPrefix(line, "+"):
-			cur.Additions++
-		case strings.HasPrefix(line, "-"):
-			cur.Deletions++
-		}
+		st.feed(line)
 	}
-	flush()
-	return files
+	return st.done()
+}
+
+// diffStats 一行一行地数文件清单，不需要先把整份 patch 拿在手里。
+//
+// 为什么要做成增量的：清单其实只是数个数，可 git 的 patch 输出能到几百 MB
+// （某个提交里加了个大文本文件时）。先攒后解析等于为了一个几百字节的响应吃掉
+// 几百 MB——实测某仓库里一个 200MB 的文件让进程 RSS 冲到 686MB，而响应只有 394 字节。
+// 边读边数，内存占用就跟 patch 多大无关了。
+//
+// 解析规则跟以前一字未改，只是从"自己遍历切好的行"改成"外面喂行"。
+type diffStats struct {
+	files  []DiffFile
+	cur    *DiffFile
+	inHunk bool
+}
+
+func (st *diffStats) flush() {
+	if st.cur != nil {
+		st.files = append(st.files, *st.cur)
+		st.cur = nil
+	}
+}
+
+// done 收尾并交出结果。
+//
+// 一定返回非 nil 切片：Go 的 nil 切片会序列化成 JSON null，前端拿它取 .length 会直接炸。
+func (st *diffStats) done() []DiffFile {
+	st.flush()
+	if st.files == nil {
+		return []DiffFile{}
+	}
+	return st.files
+}
+
+func (st *diffStats) feed(line string) {
+	switch {
+	case strings.HasPrefix(line, "diff --git "):
+		st.flush()
+		st.inHunk = false
+		a, b := parseDiffGitHeader(line)
+		st.cur = &DiffFile{Path: b, Status: "M"}
+		if a != b && a != "" {
+			st.cur.OrigPath = a
+		}
+
+	case st.cur == nil:
+		// 文件头之前的内容（比如 commit 头），忽略。
+		return
+
+	case strings.HasPrefix(line, "@@"):
+		st.inHunk = true
+
+	case !st.inHunk:
+		// index / --- / +++ 这些行也以 + - 开头，不能拿去数行数，
+		// 所以要等看到 @@ 才开始数。
+		switch {
+		case strings.HasPrefix(line, "new file mode"):
+			st.cur.Status = "A"
+		case strings.HasPrefix(line, "deleted file mode"):
+			st.cur.Status = "D"
+		// ⚠️ 这三行的路径也会被 git 加引号转义（名字里有引号 / 反斜杠 / 制表符 / 换行时），
+		// 必须还原，否则清单里显示的是转义后的乱名、点开还找不到文件。
+		// 不能直接用 unquotePath —— 它会 TrimSpace，而结尾真带空格的文件名 git 是不加
+		// 引号的，一 trim 就把名字改错了。
+		case strings.HasPrefix(line, "rename from "):
+			st.cur.Status = "R"
+			st.cur.OrigPath = unquoteIfQuoted(strings.TrimPrefix(line, "rename from "))
+		case strings.HasPrefix(line, "rename to "):
+			st.cur.Status = "R"
+			st.cur.Path = unquoteIfQuoted(strings.TrimPrefix(line, "rename to "))
+		case strings.HasPrefix(line, "copy from "):
+			st.cur.Status = "C"
+			st.cur.OrigPath = unquoteIfQuoted(strings.TrimPrefix(line, "copy from "))
+		case strings.HasPrefix(line, "Binary files "), strings.HasPrefix(line, "GIT binary patch"):
+			st.cur.Binary = true
+		}
+
+	case strings.HasPrefix(line, "+"):
+		st.cur.Additions++
+	case strings.HasPrefix(line, "-"):
+		st.cur.Deletions++
+	}
 }
 
 // parseDiffGitHeader 从 "diff --git a/x b/y" 这一行里取出两侧路径。
