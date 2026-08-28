@@ -111,6 +111,7 @@ const S = {
   // diff 面板的两个偏好，存在浏览器本地，换仓库、重开页面都记得。
   diffView: 'unified', // 'unified' 上下堆叠 / 'split' 左右并排
   ignoreWS: false,     // 只改了空白的行当成没改（git diff -b，不是 -w，理由见后端 ignoreWhitespaceFlag）
+  ignoreComments: false, // 整段只改了注释的地方当成没改（git diff -I，见后端 commentLinePatterns）
   lastOutput: null,    // 上一次 git 操作的原始输出，点状态栏可以看
   limit: 500,
   firstParent: false,  // 只沿第一父提交走，把合并进来的分支细节折叠掉
@@ -653,7 +654,7 @@ async function selectCommit(hash, keepScroll = false) {
   $('commitDetail').hidden = false;
 
   try {
-    const d = await apiGet('/api/commit?hash=' + encodeURIComponent(hash) + wsQuery());
+    const d = await apiGet('/api/commit?hash=' + encodeURIComponent(hash) + filterQuery());
     if (seq !== detailSeq) return;
     S.detail = d;
     if (!keepScroll || !S.detailFile || !d.files.some((f) => f.path === S.detailFile)) {
@@ -689,7 +690,7 @@ function renderCommitDetail() {
   $('dBody').textContent = d.body || '';
 
   renderFileList(d.files, S.detailFile,
-    S.ignoreWS ? 'Only whitespace changed in this commit' : '(this commit changes no files)',
+    filterPhrase() ? `Only ${filterPhrase()} changed in this commit` : '(this commit changes no files)',
     (path) => { S.detailFile = path; renderCommitDetail(); });
   loadDetailPatch();
 }
@@ -796,7 +797,7 @@ async function loadCompare() {
 
   try {
     const d = await apiGet('/api/rangediff?from=' + encodeURIComponent(from) +
-                           '&to=' + encodeURIComponent(to) + wsQuery());
+                           '&to=' + encodeURIComponent(to) + filterQuery());
     if (seq !== detailSeq) return;
     S.cmpDetail = d;
     if (!S.cmpFile || !d.files.some((f) => f.path === S.cmpFile)) {
@@ -851,7 +852,7 @@ function renderCompareDetail() {
 
   $('dBody').textContent = '';
   renderFileList(d.files, S.cmpFile,
-    S.ignoreWS ? 'These two versions differ only in whitespace' : '(these two versions are identical)',
+    filterPhrase() ? `These two versions differ only in ${filterPhrase()}` : '(these two versions are identical)',
     (path) => { S.cmpFile = path; renderCompareDetail(); loadCompareFile(); });
 }
 
@@ -865,17 +866,24 @@ function renderCompareDetail() {
 function loadDiffPrefs() {
   S.diffView = localStorage.getItem('twig-diff-view') === 'split' ? 'split' : 'unified';
   S.ignoreWS = localStorage.getItem('twig-ignore-ws') === '1';
+  S.ignoreComments = localStorage.getItem('twig-ignore-comments') === '1';
 }
 
-// wsQuery 拼给「文件清单」那两个接口的忽略空白参数。
+// filterQuery 拼给「文件清单」那两个接口的过滤参数。
 //
 // 清单和内容必须用同一个口径，否则会出现"清单里列着这个文件、点开却说没有改动"。
-const wsQuery = () => (S.ignoreWS ? '&ws=1' : '');
+const filterQuery = () => (S.ignoreWS ? '&ws=1' : '') + (S.ignoreComments ? '&ic=1' : '');
 
-// setIgnoreWS 改的是 git 那边怎么算 diff，所以要重新去后端取一次。
+// setIgnoreWS / setIgnoreComments 改的是 git 那边怎么算 diff，所以要重新去后端取一次。
 function setIgnoreWS(on) {
   S.ignoreWS = on;
   localStorage.setItem('twig-ignore-ws', on ? '1' : '0');
+  reloadDiffViews();
+}
+
+function setIgnoreComments(on) {
+  S.ignoreComments = on;
+  localStorage.setItem('twig-ignore-comments', on ? '1' : '0');
   reloadDiffViews();
 }
 
@@ -924,6 +932,7 @@ async function loadPatch(box, params) {
 
   const q = new URLSearchParams(params);
   if (S.ignoreWS) q.set('ws', '1');
+  if (S.ignoreComments) q.set('ic', '1');
   try {
     const d = await apiGet('/api/patch?' + q.toString());
     if (seq !== box.patchSeq) return;
@@ -945,12 +954,26 @@ function showDiffNote(box, text) {
   renderPatch(box, '', false, text);
 }
 
+// filterPhrase 把当前开着的过滤开关说成一句人话：
+// 'whitespace' / 'comments' / 'whitespace and comments'，都没开就返回空串。
+//
+// 两个开关四种组合，四处"没东西可看"的文案全部走它，免得各写各的说漏一种。
+function filterPhrase() {
+  const on = [];
+  if (S.ignoreWS) on.push('whitespace');
+  if (S.ignoreComments) on.push('comments');
+  return on.join(' and ');
+}
+
 // noDiffMsg 是"这个文件没东西可看"时的说法。
 //
-// 开着忽略空白的时候要说清是被它挡掉的，否则用户只会觉得界面坏了。
-const noDiffMsg = () => (S.ignoreWS
-  ? 'Nothing but whitespace changed here — untick “Ignore whitespace” to see it.'
-  : 'No changes to show.');
+// 开着过滤开关的时候必须说清是被它挡掉的，否则用户只会觉得界面坏了。
+const noDiffMsg = () => {
+  const p = filterPhrase();
+  if (!p) return 'No changes to show.';
+  const many = S.ignoreWS && S.ignoreComments;
+  return `Nothing but ${p} changed here — untick the filter${many ? 's' : ''} above to see it.`;
+};
 
 // emptyNote 决定 diff 面板空着的时候说哪句话。
 //
@@ -1014,19 +1037,38 @@ function diffToolbar() {
   }
   bar.append(seg);
 
-  const lab = el('label', 'chk');
-  lab.title = 'Hide lines that differ only in whitespace — reindented blocks, tabs vs spaces, '
+  bar.append(filterChk(
+    'Ignore whitespace', S.ignoreWS, setIgnoreWS,
+    'Hide lines that differ only in whitespace — reindented blocks, tabs vs spaces, '
     + 'trailing spaces (git diff -b).\n'
     + 'A file with nothing but whitespace changes drops out of the file list entirely.\n'
-    + 'Changes inside string literals are always shown, even when they are only spaces.';
-  const cb = el('input');
-  cb.type = 'checkbox';
-  cb.checked = S.ignoreWS;
-  cb.onchange = () => setIgnoreWS(cb.checked);
-  lab.append(cb, document.createTextNode(' Ignore whitespace'));
-  bar.append(lab);
+    + 'Changes inside string literals are always shown, even when they are only spaces.'));
+
+  bar.append(filterChk(
+    'Ignore comments', S.ignoreComments, setIgnoreComments,
+    'Hide changes where every changed line is a comment (git diff -I).\n'
+    + 'Knows //, #, /* */, --, <!-- -->.\n'
+    + 'A comment change sitting within 3 lines of a code change stays visible — it falls '
+    + 'inside the context git shows around that change. Comment sweeps far from any code '
+    + 'edit are what this hides.\n'
+    + 'A trailing comment on a line of code is always shown (that line has code on it).\n'
+    + 'A file with nothing but comment changes drops out of the file list entirely.\n'
+    + 'The patterns are deliberately narrow, so real code is never hidden: #include, '
+    + 'CSS #id selectors and *ptr all stay visible.'));
 
   return bar;
+}
+
+// filterChk 造一个过滤开关。两个开关长得一样，只有文案和回调不同。
+function filterChk(label, checked, onChange, tip) {
+  const lab = el('label', 'chk');
+  lab.title = tip;
+  const cb = el('input');
+  cb.type = 'checkbox';
+  cb.checked = checked;
+  cb.onchange = () => onChange(cb.checked);
+  lab.append(cb, document.createTextNode(' ' + label));
+  return lab;
 }
 
 /* ==================== 工作区暂存 ==================== */

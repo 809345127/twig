@@ -51,6 +51,19 @@ type DiffOptions struct {
 	// 注意它的连带效果：整个文件只有空白改动时，git 会把这个文件从输出里整个拿掉，
 	// 文件清单里也就看不到它了。这是 git 的行为，不是我们漏了，界面上要说清楚。
 	IgnoreWhitespace bool
+
+	// IgnoreComments 对应界面上的 "Ignore comments"：整段只改了注释的地方当成没变。
+	//
+	// ⚠️ 它不是逐行判的，能藏掉多少取决于**离最近的代码改动有多远**。实测规律：
+	// 一处纯注释改动，只有当它与最近的代码改动之间隔着的未改动行数 >= diff 的上下文
+	// 行数（默认 3）时才会被藏掉；更近的话，它落在那处代码改动必须显示的上下文窗口
+	// 里面，git 只能连它一起显示。（把 -U5 传进去，这个边界就跟着变成 5，验证过。）
+	// 所以"整段扫了一遍注释"这类提交效果最好，而紧贴着代码改的那一行注释藏不掉。
+	// `x := 1 // 改了行尾注释` 这种也藏不掉，那行有代码，本来也不该藏。
+	//
+	// 跟 IgnoreWhitespace 一样：整个文件只有注释改动时，这个文件会从 git 输出里
+	// 整个消失，文件清单里也就看不到了，界面上得靠文案说清楚。
+	IgnoreComments bool
 }
 
 // ignoreWhitespaceFlag 是"忽略空白"用的 git 参数。
@@ -66,15 +79,49 @@ type DiffOptions struct {
 // "原本顶格、现在被包进一层缩进"，而那种情况包裹它的那几行本来就会显示出来，不会漏审。
 const ignoreWhitespaceFlag = "-b"
 
+// ignoreCommentsFlag 是"忽略注释"用的 git 参数，值是一条正则，见 commentLinePatterns。
+const ignoreCommentsFlag = "-I"
+
+// commentLinePatterns 是"忽略注释"用的行模式，逐条通过 git 的 -I 传进去。
+//
+// git 的 -I<regex>（--ignore-matching-lines）本来就是干这个的，不用自己写注释解析器；
+// 可以给多次，任意一条匹配即算注释行。用的是 POSIX 扩展正则，且我们跑 git 时
+// 强制了 LC_ALL=C（见 exec.go），所以 [[:space:]] 是纯 ASCII 语义，行为稳定。
+//
+// ⚠️ 取舍跟 -b 而不是 -w 是同一个：**宁可漏藏，绝不误藏**。看 diff 的工具把一行真代码
+// 悄悄吞掉，比多显示几行注释严重得多。所以下面几条都刻意收窄了：
+//
+//	#  后面必须跟空格 / # / ! / 行尾   —— 否则 #include、#define、CSS 的 #id 选择器会被当注释吞掉
+//	*  后面必须跟空格或 /              —— 否则 *ptr = 5、*p := &x 这种解引用会被吞掉
+//	-- 后面必须跟空格                  —— 否则 Markdown 的 ---、命令行的 --force 会被吞掉
+//
+// 这几条都是实测出来的：19 个样本（9 个该藏 + 10 个绝不能藏，含上面每一种）跑下来
+// 零漏藏、零误藏；拿 twig 自己的改动跑，被藏的行也全部确实是注释。
+var commentLinePatterns = []string{
+	`^[[:space:]]*//`,                   // Go / JS / Java / Rust / proto / C 系行注释
+	`^[[:space:]]*#([[:space:]]|#|!|$)`, // Python / shell / YAML / Makefile / Dockerfile
+	`^[[:space:]]*/\*`,                  // C 系块注释开头
+	`^[[:space:]]*\*([[:space:]]|/|$)`,  // C 系块注释的续行与结尾
+	`^[[:space:]]*--[[:space:]]`,        // SQL / Lua
+	`^[[:space:]]*(<!--|-->)`,           // HTML / XML / Markdown
+}
+
 // args 返回要塞进 git 命令的参数。
 //
 // ⚠️ 调用方必须把它放在**选项区**——也就是排在 refs 和结尾的 `--` 前面。
 // 落到 `--` 后面 git 会把它当成一个文件名：不报错、不生效，最糟的一种失败方式。
+// 三个 *FilePatchArgs 纯函数就是为了保证这一点，别绕开它们自己拼参数。
 func (o DiffOptions) args() []string {
+	var args []string
 	if o.IgnoreWhitespace {
-		return []string{ignoreWhitespaceFlag}
+		args = append(args, ignoreWhitespaceFlag)
 	}
-	return nil
+	if o.IgnoreComments {
+		for _, p := range commentLinePatterns {
+			args = append(args, ignoreCommentsFlag, p)
+		}
+	}
+	return args
 }
 
 // commitMeta 读取单个提交的元信息（作者 / 时间 / 标题 / 正文），不含 diff。

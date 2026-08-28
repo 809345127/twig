@@ -2,6 +2,7 @@ package git
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -259,5 +260,91 @@ func TestTruncatePatch(t *testing.T) {
 	dirty, _ := truncatePatch("+ok\xff\xfe\n")
 	if dirty != "+ok\uFFFD\n" {
 		t.Errorf("非法字节没洗干净：%q", dirty)
+	}
+}
+
+// 忽略注释那组 -I 参数同样必须待在选项区。
+//
+// 跟 -b 一模一样的坑：-I 落到 -- 后面，git 把它和它后面那条正则一起当成文件名，
+// 退出码 0、不报错、开关静默失效。实测确认过，所以这条也钉死。
+// 这里连"两个开关同时开"的组合一起测——真实使用里它们本来就可以同时勾上。
+func TestIgnoreCommentsFlagPosition(t *testing.T) {
+	for name, opt := range map[string]DiffOptions{
+		"仅注释":   {IgnoreComments: true},
+		"空白+注释": {IgnoreWhitespace: true, IgnoreComments: true},
+	} {
+		for scene, args := range map[string][]string{
+			"commit": commitFilePatchArgs("abc123", "a.go", "", opt),
+			"range":  rangeFilePatchArgs("old", "new", "a.go", "", opt),
+			"work":   workFilePatchArgs("a.go", true, opt),
+		} {
+			sepAt := len(args)
+			for i, a := range args {
+				if a == "--" {
+					sepAt = i
+					break
+				}
+			}
+			n := 0
+			for i, a := range args {
+				if a != ignoreCommentsFlag {
+					continue
+				}
+				n++
+				if i > sepAt {
+					t.Errorf("%s/%s：%s 落到了 -- 后面（静默失效）：%v", name, scene, ignoreCommentsFlag, args)
+				}
+				// -I 后面必须紧跟一条正则，不能是另一个参数或者结尾。
+				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+					t.Errorf("%s/%s：%s 后面没跟上正则：%v", name, scene, ignoreCommentsFlag, args)
+				}
+			}
+			if n != len(commentLinePatterns) {
+				t.Errorf("%s/%s：期望 %d 个 %s，实际 %d 个", name, scene, len(commentLinePatterns), ignoreCommentsFlag, n)
+			}
+		}
+	}
+}
+
+// 注释模式必须是 git 认得的 POSIX 扩展正则，而且"宁可漏藏、绝不误藏"——
+// 下面这些是真代码，一条都不许被当成注释。
+func TestCommentPatternsNeverMatchCode(t *testing.T) {
+	code := []string{
+		"#include <stdio.h>", "#define MAX 10", "#dDiff { color: red; }",
+		"*ptr = 5", "*p := &x", "---", "----", "--force-with-lease",
+		"x := 1 // 行尾注释", `print('# 不是注释')`, "y := 2", "}", "",
+	}
+	res := make([]*regexp.Regexp, 0, len(commentLinePatterns))
+	for _, p := range commentLinePatterns {
+		re, err := regexp.CompilePOSIX(p)
+		if err != nil {
+			t.Fatalf("正则编不过 %q: %v", p, err)
+		}
+		res = append(res, re)
+	}
+	for _, line := range code {
+		for i, re := range res {
+			if re.MatchString(line) {
+				t.Errorf("真代码被当成注释了：%q 命中 %q", line, commentLinePatterns[i])
+			}
+		}
+	}
+
+	// 反面：这些确实是注释，至少要被一条模式认出来。
+	comments := []string{
+		"// go", "  // 带缩进", "# shell", "## markdown", "#!/bin/bash",
+		"/* 块注释", " * 续行", " */", "-- sql", "<!-- html -->",
+	}
+	for _, line := range comments {
+		hit := false
+		for _, re := range res {
+			if re.MatchString(line) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			t.Errorf("注释没被认出来：%q", line)
+		}
 	}
 }

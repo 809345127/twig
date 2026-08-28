@@ -259,10 +259,15 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 
 // diffOpts 从 query 里读出 diff 选项。四个出 diff 的接口都走它，口径才一致。
 //
-// ws=1 对应界面上的 "Ignore whitespace"。注意它开着的时候，只有空白改动的文件
-// 会从 git 的输出里整个消失——文件清单里也就看不到它了，这是 git 的行为，不是漏了。
+// ws=1 对应界面上的 "Ignore whitespace"，ic=1 对应 "Ignore comments"。
+// 注意它们开着的时候，被过滤掉的那些文件会从 git 的输出里整个消失——文件清单里
+// 也就看不到它了，这是 git 的行为，不是漏了，界面上得靠文案说清楚。
 func diffOpts(r *http.Request) git.DiffOptions {
-	return git.DiffOptions{IgnoreWhitespace: r.URL.Query().Get("ws") == "1"}
+	q := r.URL.Query()
+	return git.DiffOptions{
+		IgnoreWhitespace: q.Get("ws") == "1",
+		IgnoreComments:   q.Get("ic") == "1",
+	}
 }
 
 // GET /api/commit?hash=... —— 单个提交的详情与 diff。
