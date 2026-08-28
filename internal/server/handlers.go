@@ -81,6 +81,9 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repo, _ := s.currentRepo()
+	// 换了仓库，指纹基线也要跟着换，否则自动刷新会以为"变了"再刷一遍——
+	// 而界面这时候本来就在做完整加载。
+	s.watch.resync()
 	info, err := s.buildRepoInfo(repo)
 	if err != nil {
 		writeErr(w, err)
@@ -514,6 +517,10 @@ func (s *Server) handleOp(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, fmt.Errorf("unknown action: %s", req.Action))
 		return
 	}
+
+	// 不管成没成，仓库状态都可能已经变了（比如合并冲突：命令报错，工作区却真的动了）。
+	// 把指纹重记成基线：界面接下来本来就会自己刷一遍，不重记的话自动刷新会再刷一次。
+	s.watch.resync()
 
 	if err != nil {
 		// 失败时也把 git 的输出带回去，界面上能看到原始报错。

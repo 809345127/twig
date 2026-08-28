@@ -115,6 +115,7 @@ const S = {
   lastOutput: null,    // 上一次 git 操作的原始输出，点状态栏可以看
   limit: 500,
   firstParent: false,  // 只沿第一父提交走，把合并进来的分支细节折叠掉
+  autoRefresh: true,   // 仓库在 twig 外面被改动时自己刷新（见文件末尾的 watchLoop）
   branchFilter: '',
   loading: false,
 };
@@ -463,6 +464,13 @@ function jumpToRef(ref) {
 function renderGraph() {
   const rows = $('rows');
   const svg = $('graphSvg');
+  // 先把滚动位置记下来，画完再放回去。
+  //
+  // ⚠️ 这一步是自动刷新能不能用的前提：这个函数是清空重建的，不接回去的话，
+  // 每次自动刷新都会把你正在看的位置弹回顶部——那比不刷新还烦人。
+  // 手动点 Refresh 时同样受益。
+  const scroller = $('graphScroll');
+  const keepTop = scroller ? scroller.scrollTop : 0;
   rows.textContent = '';
   svg.textContent = '';
 
@@ -556,6 +564,9 @@ function renderGraph() {
     `${plural(g.commits.length, 'commit')} · ${plural(g.width, 'lane')}` +
     (S.selected.size ? ` · ${plural(S.selected.size, 'branch', 'branches')}` : ' · all branches') +
     (S.firstParent ? ' · first parent only' : '');
+
+  // 行数变了（新提交、切了筛选）时位置只能算个近似，但比归零强得多。
+  if (scroller) scroller.scrollTop = keepTop;
 }
 
 // colorOfCommit：节点颜色跟着它下面那条主干线走。
@@ -1535,6 +1546,10 @@ function bindEvents() {
   // 提交条数 / 只看主线
   $('limitSel').onchange = (ev) => { S.limit = parseInt(ev.target.value, 10); refreshGraph(); };
   $('firstParentChk').onchange = (ev) => { S.firstParent = ev.target.checked; refreshGraph(); };
+  $('autoRefreshChk').onchange = (ev) => {
+    S.autoRefresh = ev.target.checked;
+    localStorage.setItem('twig-auto-refresh', S.autoRefresh ? '1' : '0');
+  };
 
   // 工作区
   $('stageAllBtn').onclick = () => runOp({ action: 'stage' }, 'Stage all');
@@ -1612,5 +1627,67 @@ function bindEvents() {
 }
 
 loadDiffPrefs();
+loadAutoRefreshPref();
 bindEvents();
 bootstrap().catch((e) => setStatus(e.message, 'err'));
+
+/* ==================== 自动刷新 ==================== */
+
+// 在终端里敲了 git 命令、在编辑器里改了文件，界面自己更新，不用手点 Refresh。
+//
+// 做法是长轮询：服务端给仓库状态算一个指纹（见 internal/git/fingerprint.go），
+// 变了就把版本号推一格；我们带着自己知道的版本号去问，服务端要么立刻答、要么把请求
+// 挂到真有变化或者超时（25 秒）才答。所以这里是"问完立刻再问"的循环而不是定时器——
+// 没有变化的时候几乎不产生流量，有变化时零点几秒就回来了。
+//
+// 服务端那边的探测循环只在有人问的时候才跑，所以标签页切到后台、或者关掉这个开关，
+// 那边也就跟着停了，twig 常驻一整天不会白烧 CPU。
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function loadAutoRefreshPref() {
+  // 默认开着；只有明确存过 '0' 才算关。
+  S.autoRefresh = localStorage.getItem('twig-auto-refresh') !== '0';
+  const cb = $('autoRefreshChk');
+  if (cb) cb.checked = S.autoRefresh;
+}
+
+// canAutoRefresh 决定这一刻该不该自己刷新。
+//
+// 刷新会重画整个界面，撞上用户正在做的事就很烦，所以下面几种情况先忍着。
+// 注意忍的时候**不能**把版本号记下来——记了这次变化就永远不会被刷出来了；
+// 保持原样、等下一轮条件合适了自然会刷。
+function canAutoRefresh() {
+  if (!S.autoRefresh || !S.repo || S.loading) return false;
+  // 有弹窗开着（换仓库、输入框、命令输出）时别在人家底下抽地毯。
+  for (const id of ['repoModal', 'promptModal', 'outputModal']) {
+    const m = $(id);
+    if (m && !m.hidden) return false;
+  }
+  return true;
+}
+
+let watchVersion = 0;
+
+async function watchLoop() {
+  for (;;) {
+    // 标签页在后台、或者开关关着，就不去问。服务端那边没人问也会把探测停掉。
+    if (document.hidden || !S.autoRefresh) { await sleep(1000); continue; }
+    try {
+      const d = await apiGet('/api/watch?since=' + watchVersion);
+      const v = d.version || 0;
+      if (v === watchVersion) continue;      // 超时返回，没变化
+      if (!canAutoRefresh()) { await sleep(1500); continue; }  // 时机不对，版本号先不动
+      watchVersion = v;
+      await refreshAll();
+    } catch (e) {
+      // 服务重启、断网之类。等一会再问，别原地打转。
+      await sleep(3000);
+    }
+  }
+}
+
+// ⚠️ 这一句必须放在文件最末尾。上面的 sleep 是 const，
+// 在它的定义之前调用 watchLoop 会踩暂时性死区、抛 ReferenceError，
+// 而且报错只出现在浏览器控制台里——界面看着就是"自动刷新没生效"，很难查。
+watchLoop();

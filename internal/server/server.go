@@ -21,6 +21,8 @@ type Server struct {
 	repo *git.Repo
 
 	state *AppState
+	// watch 是自动刷新的服务端：探测仓库有没有变，供浏览器长轮询。
+	watch *watcher
 	// token 每次启动随机生成，接口调用必须带上，防止别的网页偷偷访问本机服务。
 	token string
 	web   fs.FS
@@ -36,11 +38,13 @@ func New(web fs.FS, token string) *Server {
 		_, _ = rand.Read(buf)
 		token = hex.EncodeToString(buf)
 	}
-	return &Server{
+	s := &Server{
 		state: loadState(),
 		token: token,
 		web:   web,
 	}
+	s.watch = newWatcher(s)
+	return s
 }
 
 // Token 返回本次运行的接口令牌。
@@ -62,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/patch", s.handlePatch)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/stashes", s.handleStashes)
+	mux.HandleFunc("GET /api/watch", s.handleWatch)
 	mux.HandleFunc("POST /api/op", s.handleOp)
 
 	mux.Handle("/", http.FileServer(http.FS(s.web)))
