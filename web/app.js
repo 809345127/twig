@@ -108,6 +108,9 @@ const S = {
   cmpFile: null,       // 比较结果里选中的文件路径
   wipMode: false,      // 下方面板是否处于"工作区"模式
   wipFile: null,       // { path, staged, untracked }
+  // diff 面板的两个偏好，存在浏览器本地，换仓库、重开页面都记得。
+  diffView: 'unified', // 'unified' 上下堆叠 / 'split' 左右并排
+  ignoreWS: false,     // 只改了空白的行当成没改（git diff -b，不是 -w，理由见后端 ignoreWhitespaceFlag）
   lastOutput: null,    // 上一次 git 操作的原始输出，点状态栏可以看
   limit: 500,
   firstParent: false,  // 只沿第一父提交走，把合并进来的分支细节折叠掉
@@ -629,7 +632,15 @@ function commitRow(c) {
 
 /* ==================== 提交详情 ==================== */
 
+// detailSeq 给每次"要往下方面板里画点什么"的请求编号，只认最后一次的结果。
+//
+// 没有它的话，连着点两个提交、而第一个请求恰好回得更慢时，先点的那个提交的内容
+// 会盖在后点的那个上面——界面上就是"高亮在这条、内容却是那条"。
+// 提交详情和比较模式共用一个计数器，因为它们抢的是同一块面板。
+let detailSeq = 0;
+
 async function selectCommit(hash, keepScroll = false) {
+  const seq = ++detailSeq;
   S.selCommit = hash;
   S.wipMode = false;
   S.cmpA = S.cmpB = S.cmpDetail = S.cmpFile = null;
@@ -642,7 +653,8 @@ async function selectCommit(hash, keepScroll = false) {
   $('commitDetail').hidden = false;
 
   try {
-    const d = await apiGet('/api/commit?hash=' + encodeURIComponent(hash));
+    const d = await apiGet('/api/commit?hash=' + encodeURIComponent(hash) + wsQuery());
+    if (seq !== detailSeq) return;
     S.detail = d;
     if (!keepScroll || !S.detailFile || !d.files.some((f) => f.path === S.detailFile)) {
       S.detailFile = d.files.length ? d.files[0].path : null;
@@ -676,10 +688,20 @@ function renderCommitDetail() {
 
   $('dBody').textContent = d.body || '';
 
-  renderFileList(d.files, S.detailFile, '(this commit changes no files)',
+  renderFileList(d.files, S.detailFile,
+    S.ignoreWS ? 'Only whitespace changed in this commit' : '(this commit changes no files)',
     (path) => { S.detailFile = path; renderCommitDetail(); });
-  const file = d.files.find((f) => f.path === S.detailFile);
-  renderDiff($('dDiff'), file ? [file] : []);
+  loadDetailPatch();
+}
+
+// loadDetailPatch 去取"当前提交里选中的那个文件"改了什么。
+//
+// 文件清单跟着提交详情一起来了，逐行内容按需单独取——原因见后端 parseDiffStats 的注释。
+function loadDetailPatch() {
+  const d = S.detail;
+  const f = d && d.files.find((x) => x.path === S.detailFile);
+  if (!f) { showDiffNote($('dDiff'), emptyNote(d && d.files)); return; }
+  loadPatch($('dDiff'), { mode: 'commit', hash: d.hash, path: f.path, orig: f.origPath || '' });
 }
 
 // renderFileList 画详情面板左边那一列文件。
@@ -763,6 +785,7 @@ function exitCompare() {
 
 async function loadCompare() {
   if (!S.cmpB) return;
+  const seq = ++detailSeq;
   const [from, to] = compareEnds();
   S.wipMode = false;
   $('wipItem').classList.remove('active');
@@ -773,7 +796,8 @@ async function loadCompare() {
 
   try {
     const d = await apiGet('/api/rangediff?from=' + encodeURIComponent(from) +
-                           '&to=' + encodeURIComponent(to));
+                           '&to=' + encodeURIComponent(to) + wsQuery());
+    if (seq !== detailSeq) return;
     S.cmpDetail = d;
     if (!S.cmpFile || !d.files.some((f) => f.path === S.cmpFile)) {
       S.cmpFile = d.files.length ? d.files[0].path : null;
@@ -785,35 +809,13 @@ async function loadCompare() {
   }
 }
 
-// cmpFileSeq 给每次取文件内容编号：连着点几个文件时，只认最后一次的结果，
-// 免得先发出的请求后返回、把已经换掉的文件内容画上去。
-let cmpFileSeq = 0;
-
-// loadCompareFile 取比较模式下当前选中那个文件的逐行差异。
-//
-// 文件清单是一次性拿到的，内容按需单独取，原因见后端 parseDiffStats 的注释。
-async function loadCompareFile() {
-  const box = $('dDiff');
-  const f = ((S.cmpDetail && S.cmpDetail.files) || []).find((x) => x.path === S.cmpFile);
-  if (!f) { renderDiff(box, []); return; }
-
-  const seq = ++cmpFileSeq;
+// loadCompareFile 取比较模式下选中那个文件的改动内容。
+function loadCompareFile() {
+  const files = (S.cmpDetail && S.cmpDetail.files) || [];
+  const f = files.find((x) => x.path === S.cmpFile);
+  if (!f) { showDiffNote($('dDiff'), emptyNote(files)); return; }
   const [from, to] = compareEnds();
-  box.textContent = '';
-  box.append(el('div', 'diff-note', 'Loading…'));
-  try {
-    const d = await apiGet('/api/rangefilediff' +
-      '?from=' + encodeURIComponent(from) +
-      '&to=' + encodeURIComponent(to) +
-      '&path=' + encodeURIComponent(f.path) +
-      (f.origPath ? '&orig=' + encodeURIComponent(f.origPath) : ''));
-    if (seq !== cmpFileSeq) return;
-    renderDiff(box, d.files || []);
-  } catch (e) {
-    if (seq !== cmpFileSeq) return;
-    box.textContent = '';
-    box.append(el('div', 'diff-note', e.message));
-  }
+  loadPatch($('dDiff'), { mode: 'range', from, to, path: f.path, orig: f.origPath || '' });
 }
 
 function renderCompareDetail() {
@@ -848,63 +850,183 @@ function renderCompareDetail() {
   meta.append(mkMini('Exit compare', exitCompare));
 
   $('dBody').textContent = '';
-  renderFileList(d.files, S.cmpFile, '(these two versions are identical)',
+  renderFileList(d.files, S.cmpFile,
+    S.ignoreWS ? 'These two versions differ only in whitespace' : '(these two versions are identical)',
     (path) => { S.cmpFile = path; renderCompareDetail(); loadCompareFile(); });
 }
 
-/* diff 渲染 */
-function renderDiff(box, files) {
+/* ==================== diff 渲染 ==================== */
+
+// 这一段自己只做三件事：取 patch 文本、放一条工具条、把文本交给 diff2html。
+// 并排视图、行内高亮（一行里到底哪几个字变了）、语法着色、并排滚动同步，
+// 全部是 diff2html 做的，我们一行都不重复实现。库的来历见 web/vendor/README.md。
+
+// loadDiffPrefs 从浏览器本地读回上次的视图偏好。
+function loadDiffPrefs() {
+  S.diffView = localStorage.getItem('twig-diff-view') === 'split' ? 'split' : 'unified';
+  S.ignoreWS = localStorage.getItem('twig-ignore-ws') === '1';
+}
+
+// wsQuery 拼给「文件清单」那两个接口的忽略空白参数。
+//
+// 清单和内容必须用同一个口径，否则会出现"清单里列着这个文件、点开却说没有改动"。
+const wsQuery = () => (S.ignoreWS ? '&ws=1' : '');
+
+// setIgnoreWS 改的是 git 那边怎么算 diff，所以要重新去后端取一次。
+function setIgnoreWS(on) {
+  S.ignoreWS = on;
+  localStorage.setItem('twig-ignore-ws', on ? '1' : '0');
+  reloadDiffViews();
+}
+
+// setDiffView 只是换个画法，手上的 patch 文本够用，不用再请求一次。
+function setDiffView(mode) {
+  S.diffView = mode;
+  localStorage.setItem('twig-diff-view', mode);
+  redrawDiffViews();
+}
+
+// reloadDiffViews 重新去后端要一遍当前视图的数据。
+function reloadDiffViews() {
+  if (S.wipMode) { loadWipDiff(); return; }
+  if (S.cmpB) { loadCompare(); return; }
+  if (S.selCommit) { selectCommit(S.selCommit, true); }
+}
+
+// redrawDiffViews 拿已经在手的 patch 文本重画一遍。
+//
+// 顺手把滚动位置接回去：切换上下 / 并排是为了换个角度看同一处改动，
+// 每切一次就被弹回文件开头的话，稍大一点的文件根本没法用。
+// 两种视图的行数不一样，接回去的位置只能算个近似，但比归零强得多。
+function redrawDiffViews() {
+  for (const id of ['dDiff', 'wipDiff']) {
+    const box = $(id);
+    // 上一次画了什么记在容器自己身上，见 renderPatch。
+    if (!box || !box.twigDiff) continue;
+    const top = box.scrollTop;
+    const d = box.twigDiff;
+    renderPatch(box, d.patch, d.truncated, d.note);
+    box.scrollTop = top;
+  }
+}
+
+// loadPatch 去取一个文件的原始 patch，拿到就交给 diff2html 画。
+//
+// 提交详情、比较两个版本、工作区三种视图只有参数不同，接口是同一个 /api/patch。
+// patchSeq 是防串号：连着点几个文件时只认最后一次的结果，
+// 免得先发出的请求后返回、把已经换掉的文件内容画上去。
+async function loadPatch(box, params) {
+  // 先放"加载中"——它自己会推票号，作废所有还在飞的请求；再把新票号记下来。
+  // 顺序不能反：反过来的话这次自己的票号也会被随后的 showDiffNote 顶掉，
+  // 于是自己的响应回来时反而被当成过期的丢掉。
+  showDiffNote(box, 'Loading…');
+  const seq = box.patchSeq;
+
+  const q = new URLSearchParams(params);
+  if (S.ignoreWS) q.set('ws', '1');
+  try {
+    const d = await apiGet('/api/patch?' + q.toString());
+    if (seq !== box.patchSeq) return;
+    renderPatch(box, d.patch || '', !!d.truncated);
+  } catch (e) {
+    if (seq !== box.patchSeq) return;
+    showDiffNote(box, e.message);
+  }
+}
+
+// showDiffNote 在 diff 面板里放一句话（加载中 / 没得看 / 出错了）。
+// 工具条照样留着，不然切换视图的按钮会跟着一起消失。
+//
+// 它必须推一次票号：好几处"这个视图没东西可看"的提前返回是直接调它、不经过 loadPatch 的，
+// 不推的话，上一个文件那份还在飞的 patch 回来时票号照样对得上，就会把正文画上去——
+// 界面成了"标题和文件清单是这个提交、diff 正文却是上一个提交的"。
+function showDiffNote(box, text) {
+  box.patchSeq = (box.patchSeq || 0) + 1;
+  renderPatch(box, '', false, text);
+}
+
+// noDiffMsg 是"这个文件没东西可看"时的说法。
+//
+// 开着忽略空白的时候要说清是被它挡掉的，否则用户只会觉得界面坏了。
+const noDiffMsg = () => (S.ignoreWS
+  ? 'Nothing but whitespace changed here — untick “Ignore whitespace” to see it.'
+  : 'No changes to show.');
+
+// emptyNote 决定 diff 面板空着的时候说哪句话。
+//
+// 左边还列着文件，那就是没选中而已；一个文件都不剩，就多半是被"忽略空白"挡掉了，
+// 这时候必须说清楚，否则看上去就像界面坏了。
+const emptyNote = (files) => (files && files.length ? 'Select a file to see the changes' : noDiffMsg());
+
+// renderPatch 把一份 patch 文本画到面板里。
+function renderPatch(box, patch, truncated, note) {
+  // 记下这次画的是什么：切换 Unified / Split 时直接重画，不用重新请求接口。
+  box.twigDiff = { patch, truncated, note };
+
   box.textContent = '';
-  if (!files.length) {
-    box.append(el('div', 'diff-note', 'Select a file to see the changes'));
+  box.append(diffToolbar());
+
+  if (!patch || !patch.trim()) {
+    box.append(el('div', 'diff-note', note || noDiffMsg()));
     return;
   }
-  for (const f of files) {
-    const head = el('div', 'diff-file-head');
-    head.append(el('span', '', f.origPath ? `${f.origPath} → ${f.path}` : f.path));
-    if (f.additions || f.deletions) {
-      const s = el('span', 'stat');
-      if (f.additions) s.append(el('span', 'a', '+' + f.additions + ' '));
-      if (f.deletions) s.append(el('span', 'd', '-' + f.deletions));
-      head.append(s);
-    }
-    box.append(head);
 
-    if (f.binary) {
-      box.append(el('div', 'diff-note', 'Binary file — no text diff shown.'));
-      continue;
-    }
-    if (!f.hunks || !f.hunks.length) {
-      box.append(el('div', 'diff-note', 'No text differences (mode-only change, or identical content).'));
-      continue;
-    }
+  const host = el('div', 'd2h');
+  box.append(host);
+  new Diff2HtmlUI(host, patch, {
+    outputFormat: S.diffView === 'split' ? 'side-by-side' : 'line-by-line',
+    // 文件清单我们自己有一份（左边那列），不用它再画一遍。
+    drawFileList: false,
+    // matching: 'words' 才会去配对删除行和新增行、把行内真正变了的那几个字标出来。
+    matching: 'words',
+    diffStyle: 'word',
+    colorScheme: 'auto',
+    highlight: true,
+    synchronisedScroll: true,
+    stickyFileHeaders: false,
+    // 一次只看一个文件，它那个折叠用的 "Viewed" 勾选框只是占地方。
+    fileContentToggle: false,
+    // 让并排视图里框选复制出来的是干净的代码，不带行号和 +/- 前缀。
+    smartSelection: true,
+  }).draw();
 
-    const table = el('table', 'diff-table');
-    const tbody = el('tbody');
-    for (const h of f.hunks) {
-      const hr = el('tr', 'hunk');
-      const hc = el('td');
-      hc.colSpan = 3;
-      hc.textContent = h.header ? `@@ ${h.header}` : '@@';
-      hr.append(hc);
-      tbody.append(hr);
-
-      for (const l of h.lines) {
-        const tr = el('tr', l.kind);
-        tr.append(el('td', 'ln', l.oldLine || ''));
-        tr.append(el('td', 'ln', l.newLine || ''));
-        const sign = l.kind === 'add' ? '+' : l.kind === 'del' ? '-' : ' ';
-        tr.append(el('td', 'tx', sign + l.text));
-        tbody.append(tr);
-      }
-    }
-    table.append(tbody);
-    box.append(table);
-
-    if (f.truncated) {
-      box.append(el('div', 'diff-note', 'Diff is very large — only the first part is shown.'));
-    }
+  if (truncated) {
+    box.append(el('div', 'diff-note', 'This file’s diff is very large — only the first part is shown.'));
   }
+}
+
+// diffToolbar 是每个 diff 面板顶上那条：视图模式 + 忽略空白。
+//
+// 提交详情和工作区两个面板都走 renderPatch，所以在这里建一次两边就都有了。
+function diffToolbar() {
+  const bar = el('div', 'diff-bar');
+
+  const seg = el('div', 'seg');
+  const modes = [
+    ['unified', 'Unified', 'One column: removed lines above, added lines below'],
+    ['split', 'Split', 'Two columns: the old version on the left, the new one on the right'],
+  ];
+  for (const [mode, label, tip] of modes) {
+    const b = el('button', 'seg-btn' + (S.diffView === mode ? ' on' : ''), label);
+    b.title = tip;
+    b.onclick = () => setDiffView(mode);
+    seg.append(b);
+  }
+  bar.append(seg);
+
+  const lab = el('label', 'chk');
+  lab.title = 'Hide lines that differ only in whitespace — reindented blocks, tabs vs spaces, '
+    + 'trailing spaces (git diff -b).\n'
+    + 'A file with nothing but whitespace changes drops out of the file list entirely.\n'
+    + 'Changes inside string literals are always shown, even when they are only spaces.';
+  const cb = el('input');
+  cb.type = 'checkbox';
+  cb.checked = S.ignoreWS;
+  cb.onchange = () => setIgnoreWS(cb.checked);
+  lab.append(cb, document.createTextNode(' Ignore whitespace'));
+  bar.append(lab);
+
+  return bar;
 }
 
 /* ==================== 工作区暂存 ==================== */
@@ -1000,22 +1122,16 @@ function mkMini(text, onclick) {
   return b;
 }
 
-async function loadWipDiff() {
+function loadWipDiff() {
   const box = $('wipDiff');
-  if (!S.wipFile) {
-    box.textContent = '';
-    box.append(el('div', 'diff-note', 'No changes in the working copy'));
-    return;
-  }
+  if (!S.wipFile) { showDiffNote(box, 'No changes in the working copy'); return; }
   const { path, staged, untracked } = S.wipFile;
-  try {
-    const q = `/api/filediff?path=${encodeURIComponent(path)}&staged=${staged ? 1 : 0}&untracked=${untracked ? 1 : 0}`;
-    const data = await apiGet(q);
-    renderDiff(box, data.files || []);
-  } catch (e) {
-    box.textContent = '';
-    box.append(el('div', 'diff-note', e.message));
-  }
+  loadPatch(box, {
+    mode: 'work',
+    path,
+    staged: staged ? 1 : 0,
+    untracked: untracked ? 1 : 0,
+  });
 }
 
 /* ==================== 操作 ==================== */
@@ -1443,5 +1559,6 @@ function bindEvents() {
   makeResizer($('wipResizer'), document.querySelector('.wip-cols'), 'x', 200, 700);
 }
 
+loadDiffPrefs();
 bindEvents();
 bootstrap().catch((e) => setStatus(e.message, 'err'));

@@ -67,6 +67,13 @@ func (r *Repo) run(args ...string) (string, error) {
 	return string(b), err
 }
 
+// gitPrefix 是每条 git 命令都要带上的全局参数。
+//
+// core.quotePath=false：git 默认会把路径里的非 ASCII 字符转义成 \344\270\255 这种八进制，
+// 中文文件名在界面上就成了一串乱码、点开还找不到文件。关掉它让 git 直接输出 UTF-8。
+// （只影响非 ASCII；含引号、制表符的路径 git 照样会加引号，那部分由 unquotePath 还原。）
+var gitPrefix = []string{"-c", "core.quotePath=false"}
+
 // runBytes 执行一条 git 命令并返回原始 stdout 字节。
 //
 // 需要原始字节是因为多处解析依赖 NUL 分隔（-z），且 diff 内容可能不是 UTF-8。
@@ -74,7 +81,7 @@ func (r *Repo) runBytes(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, gitPrefix...), args...)...)
 	cmd.Dir = r.Dir
 	// 关掉交互式凭证弹窗与分页器，避免命令挂死等待输入。
 	cmd.Env = append(os.Environ(),
@@ -107,7 +114,7 @@ func (r *Repo) RunUser(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, gitPrefix...), args...)...)
 	cmd.Dir = r.Dir
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",

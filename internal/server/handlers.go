@@ -257,6 +257,14 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// diffOpts 从 query 里读出 diff 选项。四个出 diff 的接口都走它，口径才一致。
+//
+// ws=1 对应界面上的 "Ignore whitespace"。注意它开着的时候，只有空白改动的文件
+// 会从 git 的输出里整个消失——文件清单里也就看不到它了，这是 git 的行为，不是漏了。
+func diffOpts(r *http.Request) git.DiffOptions {
+	return git.DiffOptions{IgnoreWhitespace: r.URL.Query().Get("ws") == "1"}
+}
+
 // GET /api/commit?hash=... —— 单个提交的详情与 diff。
 func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	repo, err := s.currentRepo()
@@ -273,7 +281,7 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	detail, err := repo.CommitDetail(hash)
+	detail, err := repo.CommitDetail(hash, diffOpts(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -300,45 +308,12 @@ func (s *Server) handleRangeDiff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	d, err := repo.RangeDiff(from, to)
+	d, err := repo.RangeDiff(from, to, diffOpts(r))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, d)
-}
-
-// GET /api/rangefilediff —— 两个版本之间某一个文件的逐行差异。
-//
-// 单独一个接口是因为 /api/rangediff 只给文件清单：两个相隔很远的版本之间
-// 可能有上千个文件、几十万行，一次全传会把浏览器卡死。
-func (s *Server) handleRangeFileDiff(w http.ResponseWriter, r *http.Request) {
-	repo, err := s.currentRepo()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	q := r.URL.Query()
-	from, to, path := q.Get("from"), q.Get("to"), q.Get("path")
-	if from == "" || to == "" || path == "" {
-		writeErr(w, fmt.Errorf("missing 'from', 'to' or 'path' parameter"))
-		return
-	}
-	// 只校验 ref：文件路径不能一起拦，命令里已经用 -- 隔开了，
-	// 拦掉的话像 -weird.txt 这种合法文件名反而打不开。
-	if err := checkArgs(from, to); err != nil {
-		writeErr(w, err)
-		return
-	}
-	files, err := repo.RangeFileDiff(from, to, path, q.Get("orig"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if files == nil {
-		files = []git.DiffFile{}
-	}
-	writeJSON(w, map[string]any{"files": files})
 }
 
 // GET /api/status —— 工作区状态。
@@ -356,28 +331,75 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, st)
 }
 
-// GET /api/filediff —— 工作区里单个文件的 diff。
-func (s *Server) handleFileDiff(w http.ResponseWriter, r *http.Request) {
+// GET /api/patch —— 某一个文件的原始 patch 文本。
+//
+// 提交详情、比较两个版本、工作区三种视图共用这一个接口，靠 mode 区分：
+//
+//	mode=commit  hash=<提交>                      看某一个提交里的这个文件
+//	mode=range   from=<旧版本> to=<新版本>          比较两个版本
+//	mode=work    staged=0|1  untracked=0|1        工作区
+//
+// 三种都可以带 path / orig（重命名前的路径）/ ws（忽略空白）。
+//
+// 给的是 git 的原样输出，不是解析好的结构：前端交给 diff2html 渲染，
+// 并排视图、行内高亮、语法着色都由它负责，我们不必也不该再翻译一遍。
+func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 	repo, err := s.currentRepo()
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	q := r.URL.Query()
-	path := q.Get("path")
+	path, orig := q.Get("path"), q.Get("orig")
 	if path == "" {
 		writeErr(w, fmt.Errorf("missing 'path' parameter"))
 		return
 	}
-	files, err := repo.FileDiff(path, q.Get("staged") == "1", q.Get("untracked") == "1")
+	opt := diffOpts(r)
+
+	var (
+		patch     string
+		truncated bool
+	)
+	switch mode := q.Get("mode"); mode {
+	case "commit":
+		hash := q.Get("hash")
+		if hash == "" {
+			writeErr(w, fmt.Errorf("missing 'hash' parameter"))
+			return
+		}
+		// 只校验 ref：文件路径不能一起拦，命令里已经用 -- 隔开了，
+		// 拦掉的话像 -weird.txt 这种合法文件名反而打不开。
+		if err := checkArgs(hash); err != nil {
+			writeErr(w, err)
+			return
+		}
+		patch, truncated, err = repo.CommitFilePatch(hash, path, orig, opt)
+
+	case "range":
+		from, to := q.Get("from"), q.Get("to")
+		if from == "" || to == "" {
+			writeErr(w, fmt.Errorf("missing 'from' or 'to' parameter"))
+			return
+		}
+		if err := checkArgs(from, to); err != nil {
+			writeErr(w, err)
+			return
+		}
+		patch, truncated, err = repo.RangeFilePatch(from, to, path, orig, opt)
+
+	case "work":
+		patch, truncated, err = repo.WorkFilePatch(path, q.Get("staged") == "1", q.Get("untracked") == "1", opt)
+
+	default:
+		writeErr(w, fmt.Errorf("unknown mode %q (want commit / range / work)", mode))
+		return
+	}
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if files == nil {
-		files = []git.DiffFile{}
-	}
-	writeJSON(w, map[string]any{"files": files})
+	writeJSON(w, map[string]any{"patch": patch, "truncated": truncated})
 }
 
 // GET /api/stashes —— stash 列表。

@@ -59,9 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/graph", s.handleGraph)
 	mux.HandleFunc("GET /api/commit", s.handleCommit)
 	mux.HandleFunc("GET /api/rangediff", s.handleRangeDiff)
-	mux.HandleFunc("GET /api/rangefilediff", s.handleRangeFileDiff)
+	mux.HandleFunc("GET /api/patch", s.handlePatch)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
-	mux.HandleFunc("GET /api/filediff", s.handleFileDiff)
 	mux.HandleFunc("GET /api/stashes", s.handleStashes)
 	mux.HandleFunc("POST /api/op", s.handleOp)
 

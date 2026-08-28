@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>twig</title>
+<!-- diff 渲染交给 diff2html：并排视图、行内高亮、语法着色都是它做的。
+     这三份都是原样引入的第三方文件，来历和升级办法见 web/vendor/README.md。
+     顺序有讲究：语法配色表和 diff2html 都得排在 style.css 前面，
+     它们和我们的规则特异性一样，谁在后面谁说了算。 -->
+<link rel="stylesheet" href="/vendor/highlight-github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="/vendor/highlight-github-dark.min.css" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="/vendor/diff2html.min.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -230,6 +237,7 @@
   </div>
 </div>
 
+<script src="/vendor/diff2html-ui-slim.min.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
