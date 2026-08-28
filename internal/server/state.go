@@ -140,6 +140,12 @@ func (s *AppState) setSelectedRefs(repo string, refs []string) {
 }
 
 // getSelectedRefs 取出某个仓库上次勾选的分支。
+//
+// ⚠️ 从没打开过的仓库要返回空切片，不能是 nil——Go 的 nil 切片序列化成 JSON 是
+// null 不是 []，客户端（含 mac/ 那套 Swift 原生外壳）按非 optional 数组解码会直接
+// 崩溃。这个仓库里其它同类地方（parseDiffStats、handleRefs、buildRepoInfo 的
+// Remotes……）都已经这么处理了，这处是漏网的一个：实测用一个全新仓库（从没记录过
+// 勾选状态的）连 /api/bootstrap，Swift 端在 selectedRefs 字段解码时直接报错退出。
 func (s *AppState) getSelectedRefs(repo string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,5 +153,5 @@ func (s *AppState) getSelectedRefs(repo string) []string {
 	if refs, ok := s.SelectedRefs[repo]; ok {
 		return refs
 	}
-	return nil
+	return []string{}
 }

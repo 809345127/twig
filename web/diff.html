@@ -1,0 +1,123 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>twig diff</title>
+<link rel="stylesheet" href="/vendor/highlight-github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="/vendor/highlight-github-dark.min.css" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="/vendor/diff2html.min.css">
+<link rel="stylesheet" href="/style.css">
+<style>
+  /* 这个页面只用来当 diff 渲染面，工具条（Unified/Split、Ignore 开关）
+     现在由原生外壳（mac/ 那套 SwiftUI）负责，所以不引入 app.js、不建 .diff-bar。
+     body 直接就是滚动容器，对应网页版的 .diff-view。 */
+  html, body { height: 100%; margin: 0; }
+  body { overflow: auto; background: var(--bg); color: var(--text); font-family: var(--mono); }
+  .diff-note { padding: 10px; color: var(--text-faint); font-family: -apple-system, sans-serif; }
+</style>
+</head>
+<body>
+<script src="/vendor/diff2html-ui-slim.min.js"></script>
+<script>
+// 独立的 diff 渲染页：接原生外壳（mac/）的 WKWebView，也可以被浏览器直接打开调试。
+// URL 形状：/diff.html?token=T&mode=commit|range|work&hash=&from=&to=&path=&orig=&
+//           ws=1&ic=1&view=unified|split
+//
+// 只做一件事：把这些参数原样转发给 /api/patch，拿到 patch 文本交给 diff2html。
+// ws/ic 的语义、"忽略空白/注释之后这个文件从清单消失"这类文案，都在原生那边的
+// FileListView 处理——这个页面只管画，不管清单。
+const q = new URLSearchParams(location.search);
+const TOKEN = q.get('token') || '';
+const VIEW = q.get('view') === 'split' ? 'split' : 'unified';
+
+async function api(path) {
+  const res = await fetch(path, { headers: { 'X-Twig-Token': TOKEN } });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+  if (!res.ok) throw new Error((data && data.error) || res.statusText);
+  return data;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+// 跟 app.js 的 filterPhrase / noDiffMsg 是同一套话术，保持一致，
+// 免得同一件事在原生和网页两边说法不一样。
+function filterPhrase() {
+  const on = [];
+  if (q.get('ws') === '1') on.push('whitespace');
+  if (q.get('ic') === '1') on.push('comments');
+  return on.join(' and ');
+}
+function noDiffMsg() {
+  const p = filterPhrase();
+  if (!p) return 'No changes to show.';
+  const many = q.get('ws') === '1' && q.get('ic') === '1';
+  return `Nothing but ${p} changed here — untick the filter${many ? 's' : ''} above to see it.`;
+}
+
+async function render() {
+  document.body.textContent = '';
+  const mode = q.get('mode') || 'commit';
+  const params = new URLSearchParams();
+  params.set('mode', mode);
+  params.set('path', q.get('path') || '');
+  if (q.get('orig')) params.set('orig', q.get('orig'));
+  if (q.get('ws') === '1') params.set('ws', '1');
+  if (q.get('ic') === '1') params.set('ic', '1');
+  if (mode === 'commit') {
+    params.set('hash', q.get('hash') || '');
+  } else if (mode === 'range') {
+    params.set('from', q.get('from') || '');
+    params.set('to', q.get('to') || '');
+  } else {
+    params.set('staged', q.get('staged') || '0');
+    params.set('untracked', q.get('untracked') || '0');
+  }
+
+  let resp;
+  try {
+    resp = await api('/api/patch?' + params.toString());
+  } catch (e) {
+    document.body.append(el('div', 'diff-note', e.message));
+    return;
+  }
+
+  if (!resp.patch || !resp.patch.trim()) {
+    document.body.append(el('div', 'diff-note', noDiffMsg()));
+    return;
+  }
+
+  const host = el('div', 'd2h');
+  document.body.append(host);
+  new Diff2HtmlUI(host, resp.patch, {
+    outputFormat: VIEW === 'split' ? 'side-by-side' : 'line-by-line',
+    drawFileList: false,
+    matching: 'words',
+    diffStyle: 'word',
+    colorScheme: 'auto',
+    highlight: true,
+    synchronisedScroll: true,
+    stickyFileHeaders: false,
+    fileContentToggle: false,
+    smartSelection: true,
+  }).draw();
+
+  if (resp.truncated) {
+    document.body.append(el('div', 'diff-note', 'This file’s diff is very large — only the first part is shown.'));
+  }
+}
+
+if (!q.get('path')) {
+  document.body.append(el('div', 'diff-note', 'Select a file to see the changes'));
+} else {
+  render();
+}
+</script>
+</body>
+</html>
