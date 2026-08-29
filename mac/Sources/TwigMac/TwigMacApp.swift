@@ -5,14 +5,20 @@ struct TwigMacApp: App {
     @StateObject private var app = AppState()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("Twig") {
             ContentView()
                 .environmentObject(app)
                 .task { await app.connect() }
-                .frame(minWidth: 900, minHeight: 560)
+                .frame(minWidth: 960, minHeight: 600)
+                .onAppear {
+                    // 窗口首次出现时设置 tabbing 模式，支持多标签页
+                    NSWindow.allowsAutomaticWindowTabbing = true
+                }
         }
         .windowResizability(.contentSize)
-        .windowToolbarStyle(.unified(showsTitle: false))   // 工具条里已经有仓库名了，标题栏"TwigMac"是多余的重复文字
+        // 统一标题栏 + 隐藏标题文字（工具条里已经有仓库名）
+        .windowToolbarStyle(.unified(showsTitle: false))
+        // 让窗口支持全屏、标签页等标准 macOS 行为
         .commands {
             // 没有"新建文档"这回事，把默认的 Cmd+N 换成"换仓库"。
             CommandGroup(replacing: .newItem) {
@@ -24,8 +30,14 @@ struct TwigMacApp: App {
                 Button("Refresh") { Task { await app.refreshAll() } }
                     .keyboardShortcut("r", modifiers: .command)
             }
+            // 视图菜单：显示/隐藏侧边栏（标准 macOS 快捷键 Cmd+Option+S）
+            CommandGroup(after: .toolbar) {
+                Button("Toggle Sidebar") {
+                    NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .option])
+            }
             // Esc 退出比较模式：web 版 Esc 先关弹窗、没弹窗就退出比较。
-            // 这里用一个不可见的命令按钮接住 Esc，只在比较模式下有动作。
             CommandGroup(after: .help) {
                 Button("Exit Compare") {
                     if case .compare(let from, _) = app.detailMode {

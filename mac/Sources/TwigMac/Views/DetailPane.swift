@@ -4,66 +4,71 @@ struct DetailPane: View {
     @EnvironmentObject var app: AppState
 
     var body: some View {
-        switch app.detailMode {
-        case .none:
-            ContentUnavailableView("Select a commit", systemImage: "doc.text.magnifyingglass")
-        case .commit(let hash):
-            if let d = app.commitDetail {
-                VStack(spacing: 0) {
-                    CommitMetaHeader(detail: d)
-                    Divider()
-                    HSplitView {
-                        FileListView(
-                            files: d.files,
-                            selectedPath: app.selectedFile?.path,
-                            header: d.files.isEmpty ? "(this commit changes no files)" : "\(plural(d.files.count)) changed"
-                        ) { f in Task { await app.selectFile(f, inCommit: hash) } }
-                        .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
-                        DiffPanelView()
+        Group {
+            switch app.detailMode {
+            case .none:
+                ContentUnavailableView("Select a commit", systemImage: "doc.text.magnifyingglass")
+            case .commit(let hash):
+                if let d = app.commitDetail {
+                    VStack(spacing: 0) {
+                        CommitMetaHeader(detail: d)
+                        Divider()
+                        HSplitView {
+                            FileListView(
+                                files: d.files,
+                                selectedPath: app.selectedFile?.path,
+                                header: d.files.isEmpty ? "(this commit changes no files)" : "\(plural(d.files.count)) changed"
+                            ) { f in Task { await app.selectFile(f, inCommit: hash) } }
+                            .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
+                            DiffPanelView()
+                        }
                     }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        case .compare(let from, let to):
-            if let d = app.rangeDetail {
-                VStack(spacing: 0) {
-                    HStack(spacing: 10) {
-                        Text("\(String(from.prefix(8))) → \(String(to.prefix(8)))")
-                            .font(.caption).foregroundStyle(.secondary)
-                        if d.behind > 0 && d.ahead > 0 {
-                            Text("diverged \(d.behind) / \(d.ahead)").font(.caption2).foregroundStyle(.orange)
+            case .compare(let from, let to):
+                if let d = app.rangeDetail {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 10) {
+                            Text("\(String(from.prefix(8))) → \(String(to.prefix(8)))")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if d.behind > 0 && d.ahead > 0 {
+                                Text("diverged \(d.behind) / \(d.ahead)").font(.caption2).foregroundStyle(.orange)
+                            }
+                            Spacer()
+                            Button {
+                                Task { await app.loadCompare(from: to, to: from) }
+                            } label: {
+                                Label("Swap", systemImage: "arrow.left.arrow.right")
+                            }
+                            .buttonStyle(.borderless).font(.caption)
+                            Button("Exit compare") {
+                                Task { await app.selectCommit(to) }
+                            }
+                            .buttonStyle(.borderless).font(.caption)
                         }
-                        Spacer()
-                        Button {
-                            Task { await app.loadCompare(from: to, to: from) }
-                        } label: {
-                            Label("Swap", systemImage: "arrow.left.arrow.right")
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.bar)
+                        Divider()
+                        HSplitView {
+                            FileListView(
+                                files: d.files,
+                                selectedPath: app.selectedFile?.path,
+                                header: d.files.isEmpty ? "These two versions are identical" : "\(plural(d.files.count)) changed"
+                            ) { f in Task { await app.selectFile(f, inRange: (from, to)) } }
+                            .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
+                            DiffPanelView()
                         }
-                        .buttonStyle(.borderless).font(.caption)
-                        Button("Exit compare") {
-                            Task { await app.selectCommit(to) }
-                        }
-                        .buttonStyle(.borderless).font(.caption)
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    Divider()
-                    HSplitView {
-                        FileListView(
-                            files: d.files,
-                            selectedPath: app.selectedFile?.path,
-                            header: d.files.isEmpty ? "These two versions are identical" : "\(plural(d.files.count)) changed"
-                        ) { f in Task { await app.selectFile(f, inRange: (from, to)) } }
-                        .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
-                        DiffPanelView()
-                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .workingCopy:
+                WorkingCopyPane()
             }
-        case .workingCopy:
-            WorkingCopyPane()
         }
+        // 详情面板切换时的平滑过渡，符合 macOS HIG 的动画规范。
+        .animation(.easeInOut(duration: 0.2), value: app.detailMode)
     }
 
     private func plural(_ n: Int) -> String { n == 1 ? "1 file" : "\(n) files" }
@@ -127,8 +132,9 @@ struct FileListView: View {
     var body: some View {
         VStack(spacing: 0) {
             Text(header).font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1).padding(.horizontal, 8).padding(.vertical, 5)
+                .lineLimit(1).padding(.horizontal, 12).padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar)
             Divider()
             if files.isEmpty {
                 Text("No files changed").font(.callout).foregroundStyle(.secondary).padding()
@@ -138,7 +144,7 @@ struct FileListView: View {
                 })) { f in
                     FileRow(file: f).tag(f.path)
                 }
-                .listStyle(.plain)
+                .listStyle(.sidebar)
             }
         }
     }

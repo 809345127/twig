@@ -146,19 +146,19 @@ struct GraphStats: View {
     @EnvironmentObject var app: AppState
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             if let g = app.graph {
                 Text("\(g.commits.count) commit\(g.commits.count == 1 ? "" : "s")")
-                Text("·")
+                Text("·").foregroundStyle(.tertiary)
                 Text("\(g.width) lane\(g.width == 1 ? "" : "s")")
-                Text("·")
+                Text("·").foregroundStyle(.tertiary)
                 if app.selectedRefs.isEmpty {
                     Text("all branches")
                 } else {
                     Text("\(app.selectedRefs.count) branch\(app.selectedRefs.count == 1 ? "" : "es")")
                 }
                 if app.firstParent {
-                    Text("·")
+                    Text("·").foregroundStyle(.tertiary)
                     Text("first parent only")
                 }
             }
@@ -166,9 +166,10 @@ struct GraphStats: View {
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 3)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        // 统计行用 .bar 材质，和底部状态栏、顶部工具栏统一，符合 macOS HIG。
+        .background(.bar)
     }
 }
 
@@ -176,12 +177,13 @@ struct GraphToolbar: View {
     @EnvironmentObject var app: AppState
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 16) {
             Toggle("First parent only", isOn: Binding(
                 get: { app.firstParent },
                 set: { app.setFirstParent($0) }
             ))
             .toggleStyle(.checkbox)
+            .font(.caption)
             .help("Follow only the first parent: merged-in branch detail is collapsed, leaving a single mainline")
 
             Toggle("Auto refresh", isOn: Binding(
@@ -189,23 +191,27 @@ struct GraphToolbar: View {
                 set: { app.setAutoRefresh($0) }
             ))
             .toggleStyle(.checkbox)
+            .font(.caption)
             .help("Automatically refresh when the repository changes outside twig")
 
             Spacer()
 
+            // 显示提交数的下拉：用 menu 样式，更紧凑，符合 macOS HIG。
             Picker("Show", selection: Binding(
                 get: { app.limit },
                 set: { app.limit = $0; Task { await app.reloadGraphOnly() } }
             )) {
-                Text("200").tag(200)
-                Text("500").tag(500)
-                Text("1000").tag(1000)
-                Text("3000").tag(3000)
+                Text("200 commits").tag(200)
+                Text("500 commits").tag(500)
+                Text("1000 commits").tag(1000)
+                Text("3000 commits").tag(3000)
             }
-            .frame(width: 120)
-            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 130)
+            .font(.caption)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        .background(.bar)
     }
 }
