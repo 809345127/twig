@@ -59,9 +59,9 @@ struct CommitRowView: View {
                 }
                 .font(.caption)
             }
+            .padding(.vertical, 4)
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
         .padding(.horizontal, 4)
         .frame(height: GraphMetrics.rowHeight)
         .contentShape(Rectangle())
