@@ -195,19 +195,31 @@ struct WorkingCopyRow: View {
 // 分支 / tag 徽章：配色跟网页版 .reftag 对齐——
 // 当前分支实心强调色白字；其余本地分支浅强调色底+强调字+描边；
 // 远程分支中性灰；tag 柔和琥珀。不用之前那种绿/橙/紫实心胶囊。
+//
+// 分支徽章（本地/远程）可点击：点一下把图筛成只显示这条分支——这是 twig
+// "逐条勾选分支"核心能力的最近入口，不用回侧边栏几十个复选框里找。
+// tag 不可筛（侧边栏 tag 行也没有复选框），点击无效果。
 struct RefBadge: View {
+    @EnvironmentObject var app: AppState
     let ref: Ref
 
+    private var filterable: Bool { ref.kind == "head" || ref.kind == "remote" }
+
     var body: some View {
-        Text(ref.name)
-            .font(.caption2.weight(.medium))
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(background, in: Capsule())
-            .overlay(Capsule().strokeBorder(border, lineWidth: 1))
-            .foregroundStyle(foreground)
-            .help(ref.fullName)
+        Button {
+            if filterable { app.showOnlyRef(ref.fullName) }
+        } label: {
+            Text(ref.name)
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(background, in: Capsule())
+                .overlay(Capsule().strokeBorder(border, lineWidth: 1))
+                .foregroundStyle(foreground)
+        }
+        .buttonStyle(.plain)
+        .help(filterable ? "Show only \(ref.name) in graph" : ref.fullName)
     }
 
     private var background: Color {

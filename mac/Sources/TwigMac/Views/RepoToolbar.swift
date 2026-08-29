@@ -30,45 +30,35 @@ struct RepoToolbar: ToolbarContent {
         }
 
         ToolbarItemGroup {
+            // Pull/Push 带 ahead/behind 角标（数据本来就在 refs 里）：
+            // 要不要拉/推一眼可见，不用点开分支行去找。
+            // busy 时禁用，防止连点发出两条一样的命令。
+            let behind = app.currentBranchRef?.behind ?? 0
+            let ahead = app.currentBranchRef?.ahead ?? 0
             Button { Task { await app.runOp(.init(action: "fetch"), label: "Fetch") } } label: {
                 Label("Fetch", systemImage: "arrow.down.circle")
             }
+            .disabled(app.busy)
             Button { Task { await app.runOp(.init(action: "pull"), label: "Pull") } } label: {
-                Label("Pull", systemImage: "arrow.down.left.circle")
+                Label(behind > 0 ? "Pull ↓\(behind)" : "Pull", systemImage: "arrow.down.left.circle")
             }
+            .disabled(app.busy)
             Button { Task { await app.runOp(.init(action: "push"), label: "Push") } } label: {
-                Label("Push", systemImage: "arrow.up.circle")
+                Label(ahead > 0 ? "Push ↑\(ahead)" : "Push", systemImage: "arrow.up.circle")
             }
+            .disabled(app.busy)
         }
 
-        // 新建分支 / Stash：跟 web 版工具条上的两个按钮对齐。
+        // 新建分支 / Stash：交互逻辑收在 AppState（菜单、侧边栏共用同一套）。
         ToolbarItemGroup {
-            Button {
-                if let r = app.askInput(title: "New Branch", message: "Starting from the current HEAD",
-                                         placeholder: "feature/my-branch",
-                                         checkboxLabel: "Check out after creating", checkboxChecked: true) {
-                    Task { await app.runOp(.init(action: "createBranch", name: r.value,
-                                                  startPoint: "HEAD", checkout: r.checked),
-                                            label: "Create branch \(r.value)") }
-                }
-            } label: {
+            Button { app.newBranchPrompt() } label: {
                 Label("New Branch", systemImage: "plus.circle")
             }
-            Button {
-                if app.status?.clean ?? true {
-                    app.setStatus("Working copy is clean — nothing to stash", kind: "err")
-                    return
-                }
-                if let r = app.askInput(title: "Stash Changes",
-                                         message: "Put the current uncommitted changes aside.",
-                                         placeholder: "Message (optional)",
-                                         checkboxLabel: "Include untracked files", checkboxChecked: true) {
-                    Task { await app.runOp(.init(action: "stashPush", message: r.value,
-                                                  includeUntracked: r.checked), label: "Stash") }
-                }
-            } label: {
+            .disabled(app.busy)
+            Button { app.stashPrompt() } label: {
                 Label("Stash", systemImage: "tray.and.arrow.down")
             }
+            .disabled(app.busy)
         }
 
         // 独立成第二个 ToolbarItemGroup，让系统按标准的组间距处理——

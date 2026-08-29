@@ -336,6 +336,26 @@ final class AppState: ObservableObject {
 
     // MARK: - 分支勾选 / 视图选项
 
+    // 当前分支（本地分支里 isHead 那条），工具栏 Pull/Push 的 ahead/behind 角标用。
+    var currentBranchRef: Ref? { refs.first { $0.kind == "head" && $0.isHead } }
+
+    // 只显示某一条分支（点提交行徽章用；效果等同侧边栏右键 "Show only this in graph"）。
+    func showOnlyRef(_ fullName: String) {
+        selectedRefs = [fullName]
+        Task { await reloadGraphOnly() }
+    }
+
+    // 清除分支筛选，恢复"画全部"。
+    func clearRefFilter() {
+        selectedRefs = []
+        Task { await reloadGraphOnly() }
+    }
+
+    // 当前筛选的分支短名（图工具条筛选 chip 显示用），refs 里找不到的用 fullName 兜底。
+    var selectedRefNames: [String] {
+        selectedRefs.map { full in refs.first(where: { $0.fullName == full })?.name ?? full }.sorted()
+    }
+
     func toggleRef(_ fullName: String) {
         if selectedRefs.contains(fullName) { selectedRefs.remove(fullName) }
         else { selectedRefs.insert(fullName) }
@@ -525,6 +545,33 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - 常用操作快捷方法（封装确认弹窗 + 特殊参数逻辑）
+
+    // 新建分支的完整交互（输入弹窗 + 创建 + 可选切换）。
+    // 工具栏按钮、Repository 菜单、侧边栏 + 三个入口共用这一套。
+    func newBranchPrompt() {
+        if let r = askInput(title: "New Branch", message: "Starting from the current HEAD",
+                             placeholder: "feature/my-branch",
+                             checkboxLabel: "Check out after creating", checkboxChecked: true) {
+            Task { await runOp(.init(action: "createBranch", name: r.value,
+                                      startPoint: "HEAD", checkout: r.checked),
+                                label: "Create branch \(r.value)") }
+        }
+    }
+
+    // Stash 当前改动的完整交互（工作区干净时直接提示，不弹窗）。
+    func stashPrompt() {
+        if status?.clean ?? true {
+            setStatus("Working copy is clean — nothing to stash", kind: "err")
+            return
+        }
+        if let r = askInput(title: "Stash Changes",
+                             message: "Put the current uncommitted changes aside.",
+                             placeholder: "Message (optional)",
+                             checkboxLabel: "Include untracked files", checkboxChecked: true) {
+            Task { await runOp(.init(action: "stashPush", message: r.value,
+                                      includeUntracked: r.checked), label: "Stash") }
+        }
+    }
 
     // checkout：远程分支会创建本地跟踪分支，tag 会警告 detached HEAD，本地分支直接切。
     func checkoutRef(_ ref: Ref) async {

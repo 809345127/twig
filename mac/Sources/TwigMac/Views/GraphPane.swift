@@ -214,6 +214,12 @@ struct GraphToolbar: View {
             .font(.caption)
             .help("Automatically refresh when the repository changes outside twig")
 
+            // 筛选状态一等公民：筛了哪些分支一眼可见，点 × 一键恢复"画全部"。
+            // 不然只能去图底那行小字里找 "N branches"，过几天自己都忘了图是筛过的。
+            if !app.selectedRefs.isEmpty {
+                FilterChip()
+            }
+
             Spacer()
 
             // 显示提交数的下拉：用 menu 样式，更紧凑，符合 macOS HIG。
@@ -227,11 +233,46 @@ struct GraphToolbar: View {
                 Text("3000 commits").tag(3000)
             }
             .pickerStyle(.menu)
-            .frame(width: 130)
+            .frame(width: 150)
             .font(.caption)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.bar)
+    }
+}
+
+// 图工具条上的筛选 chip：显示当前筛的分支（最多两个名字，多了 +N），点 × 清除。
+private struct FilterChip: View {
+    @EnvironmentObject var app: AppState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.caption2)
+                .foregroundStyle(Color.accentColor)
+            Text(summary)
+                .font(.caption)
+                .lineLimit(1)
+            Button {
+                app.clearRefFilter()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Clear the branch filter (show all branches)")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Color.accentColor.opacity(0.10), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1))
+    }
+
+    private var summary: String {
+        let names = app.selectedRefNames
+        let shown = names.prefix(2).joined(separator: ", ")
+        return names.count > 2 ? "\(shown) +\(names.count - 2)" : shown
     }
 }

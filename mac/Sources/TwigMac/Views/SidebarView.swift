@@ -315,7 +315,9 @@ private struct RefRow: View {
             HStack(spacing: 6) {
                 Image(systemName: checked ? "checkmark.square.fill" : "square")
                     .foregroundStyle(checked ? Color.accentColor : .secondary)
+                // 当前分支加粗——几十条分支里一眼定位，SourceTree 同款惯例。
                 Text(ref.name).lineLimit(1)
+                    .fontWeight(ref.isHead ? .semibold : .regular)
                 if ref.isHead {
                     Image(systemName: "arrow.right.circle.fill")
                         .font(.caption2).foregroundStyle(Color.accentColor)
