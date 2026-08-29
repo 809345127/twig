@@ -114,6 +114,7 @@ struct SidebarView: View {
                         app.toggleRef(ref.fullName)
                     }
                     .contextMenu { refContextMenu(ref) }
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 8))
                 }
             }
 
@@ -138,6 +139,7 @@ struct SidebarView: View {
                             app.toggleRef(ref.fullName)
                         }
                         .contextMenu { refContextMenu(ref) }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 8))
                     }
                 }
             }
@@ -174,6 +176,7 @@ struct SidebarView: View {
                             Divider()
                             Button("Copy tag name") { app.copyToClipboard(ref.name) }
                         }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 8))
                     }
                 }
             }
@@ -228,6 +231,7 @@ struct SidebarView: View {
                                 }
                             }
                         }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 8))
                 }
             }
         }
