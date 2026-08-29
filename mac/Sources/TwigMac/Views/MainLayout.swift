@@ -8,9 +8,15 @@ struct MainLayout: View {
             HSplitView {
                 SidebarView()
                     .frame(minWidth: 220, idealWidth: 260, maxWidth: 400)
-                    // macOS HIG：侧边栏用半透明毛玻璃效果，让窗口后面的内容透过来。
-                    // .ultraThinMaterial 比 .regularMaterial 更通透，更符合现代 macOS 观感。
-                    .background(.ultraThinMaterial)
+                    // ⚠️ 不能直接用 .background(.ultraThinMaterial)——material 会创建
+                    // NSVisualEffectView 层，在 macOS 上可能拦截鼠标事件，导致侧边栏
+                    // 的分支行点不动。用 .background { } 包一层并 allowsHitTesting(false)
+                    // 让材质只做视觉、不参与点击测试。
+                    .background {
+                        Rectangle()
+                            .fill(.ultraThinMaterial)
+                            .allowsHitTesting(false)
+                    }
 
                 VSplitView {
                     VStack(spacing: 0) {

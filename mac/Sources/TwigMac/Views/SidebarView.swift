@@ -320,6 +320,8 @@ private struct RefRow: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
