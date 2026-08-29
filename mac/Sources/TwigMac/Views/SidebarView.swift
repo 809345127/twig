@@ -27,6 +27,23 @@ struct SidebarView: View {
                 .listRowBackground(app.detailMode == .workingCopy ? Color.accentColor.opacity(0.15) : nil)
             }
 
+            // "Recent" 放在这里、紧跟 Working Copy 之后——它跟"当前这个仓库"无关，是切去
+            // 别的仓库用的。之前排在 Tags/Stashes 后面，分支多的仓库（colt 这种几十个
+            // backup 分支 + 上百个 origin 远程分支 + 上百个版本 tag）要滚几百行才翻得到，
+            // 跟"没有这个功能"没区别。挪到前面，不用管当前仓库有多少分支都能一眼看到。
+            if !app.recent.isEmpty {
+                Section("Recent") {
+                    ForEach(app.recent, id: \.self) { p in
+                        Button {
+                            Task { await app.openRepo(p) }
+                        } label: {
+                            Text((p as NSString).lastPathComponent).lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
             Section("Branches") {
                 ForEach(heads, id: \.fullName) { ref in
                     RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName)) {
@@ -58,19 +75,6 @@ struct SidebarView: View {
                 Section("Stashes") {
                     ForEach(app.stashes) { s in
                         Text(s.subject).font(.callout).lineLimit(1)
-                    }
-                }
-            }
-
-            if !app.recent.isEmpty {
-                Section("Recent") {
-                    ForEach(app.recent, id: \.self) { p in
-                        Button {
-                            Task { await app.openRepo(p) }
-                        } label: {
-                            Text((p as NSString).lastPathComponent).lineLimit(1)
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
             }

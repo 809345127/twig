@@ -1,9 +1,13 @@
 import SwiftUI
 import AppKit
 
-// 图区几何常量，跟 web/app.js 的 ROW_H / LANE_W / DOT_R / GRAPH_PAD 逐个对齐。
+// 图区几何常量：横向的 laneWidth / dotRadius / pad 跟 web/app.js 的
+// LANE_W / DOT_R / GRAPH_PAD 逐个对齐（这几个只影响图区宽度，跟行高无关）。
+// rowHeight 不能照抄网页版的 ROW_H=26——网页版每行是"一行文字"（subject/author/
+// date/hash 横排在同一行），这里是两行文字（第一行 徽章+subject，第二行
+// author·hash·date），26pt 装不下两行会导致 List 行溢出、上下行文字叠在一起。
 enum GraphMetrics {
-    static let rowHeight: CGFloat = 26
+    static let rowHeight: CGFloat = 40
     static let laneWidth: CGFloat = 15
     static let dotRadius: CGFloat = 4
     static let pad: CGFloat = 10

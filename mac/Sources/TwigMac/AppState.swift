@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 // 下方详情面板到底在看什么：某个提交、比较两个提交、还是工作区。
 // 对应 web/app.js 里 S.selCommit / S.cmpB / S.wipMode 这三种互斥状态，
@@ -329,6 +330,22 @@ final class AppState: ObservableObject {
         }
     }
 
+    // 换仓库入口：网页版是自己实现的文件夹浏览弹窗（走 /api/browse），原生这边
+    // 直接用系统的 NSOpenPanel——不用把那套浏览逻辑再抄一遍，用户也更熟悉。
+    // 选完调的还是同一个 /api/open，跟 openRepo(_:) 走一套路径。
+    func openRepoPicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open"
+        if let current = repo?.path {
+            panel.directoryURL = URL(fileURLWithPath: current).deletingLastPathComponent()
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await openRepo(url.path) }
+    }
+
     func openRepo(_ path: String) async {
         guard let client else { return }
         do {
@@ -339,6 +356,11 @@ final class AppState: ObservableObject {
             selectedFile = nil
             compareAnchor = nil
             await refreshAll()
+            // 后端 /api/open 会把这次打开的仓库记进它自己的"最近"列表（排到最前面），
+            // 但 Swift 这边的 recent 只在启动那次 bootstrap() 时取过一次快照，换仓库
+            // 之后不重新拉的话，侧边栏"Recent"顺序就跟后端记的对不上——新打开的这个
+            // 不会立刻跳到最前面，得等下次重启 app 才刷新。这里顺手拉一次最新的。
+            if let boot = try? await client.bootstrap() { recent = boot.recent }
             if let st = status, !st.clean { await showWorkingCopy() }
             else if let first = graph?.commits.first { await selectCommit(first.hash) }
         } catch {
