@@ -4,7 +4,12 @@ struct RepoToolbar: ToolbarContent {
     @EnvironmentObject var app: AppState
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
+        // ⚠️ 别用 .navigation 位置：它的区域宽度会跟踪 HSplitView 第一条分隔线，
+        // 拖分隔线时整个区域跟着缩放重排，肉眼看到就是工具栏"闪一下"
+        // （2026-08-29 实测：改弹性内容宽度也压不住，是结构问题不是宽度问题）。
+        // 挪成普通工具栏项（声明在最前，视觉位置不变）+ 手动画椭圆底，
+        // 拖分隔线时它纹丝不动。
+        ToolbarItem(placement: .automatic) {
             // 之前这里只是一段静态文字，没有任何点击入口——网页版"换仓库"靠的是
             // 自己实现的文件夹浏览弹窗（/api/browse），原生这边一直没接。用 Button
             // 包一层，点这个仓库名/分支的胶囊就能弹系统原生的选择文件夹面板。
@@ -19,17 +24,12 @@ struct RepoToolbar: ToolbarContent {
                             .truncationMode(.middle)
                     }
                 }
-                // 系统给 .navigation 位置的自定义内容自动套一个圆角底，那层底几乎不留
-                // 内边距——文字第一个字符正好卡在圆角开始弯曲的地方。加左右内边距
-                // 把文字往里推，躲开圆角。
                 .padding(.horizontal, 10)
-                // ⚠️ 宽度必须是弹性的（上限 220），不能写死。.navigation 项的区域宽度
-                // 会跟踪 HSplitView 第一条分隔线（实测：胶囊跟侧边栏一样宽）。侧边栏
-                // minWidth 是 220，而写死 220 的内容 + padding 要 240——分隔线拖到
-                // 最小宽度附近时可用区域装不下内容，工具栏在临界点突然裁剪重排，
-                // 肉眼看到就是"拖到胶囊位置闪一下"（2026-08-29 用户实测复现）。
-                // 弹性宽度让文字随区域收窄平滑截断，没有临界点。
+                .padding(.vertical, 3)
                 .frame(maxWidth: 220, alignment: .leading)
+                // 手动补回原来系统 .navigation 位置给的那层椭圆底
+                // （不用 material——会拦截点击，坑 V；纯色填充深浅色自适应）。
+                .background(Color.primary.opacity(0.06), in: Capsule())
             }
             .buttonStyle(.plain)
             .help("Open a different repository…")
