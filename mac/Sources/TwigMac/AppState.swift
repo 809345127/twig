@@ -154,15 +154,10 @@ final class AppState: ObservableObject {
                 repo = r
                 selectedRefs = Set(r.selectedRefs)
                 await refreshAll()
-                if let st = status, !st.clean {
-                    // ⚠️ 不能只手写 detailMode = .workingCopy——那样进了工作区视图，
-                    // 却没人去选中第一个文件，diff 面板会一直停在"Select a file"，
-                    // 哪怕左边文件列表明明有几十上百个文件。真正做"选中第一个"这件事的
-                    // 是 showWorkingCopy()，必须调它，不能只赋值那个状态字段。
-                    await showWorkingCopy()
-                } else if let first = graph?.commits.first {
-                    await selectCommit(first.hash)
-                }
+                // 启动后不自动选中任何东西（对齐网页版：selCommit=null、wipMode=false，
+                // 详情面板显示空态）。之前"脏工作区自动进工作区视图"会在界面上同时点亮
+                // 侧边栏 Working Copy 行和图区 Uncommitted changes 行——两条蓝带高度不一、
+                // 上下错位，横跨分隔线看着像渲染故障（2026-08-29 用户截图报的）。
             }
         } catch {
             DebugLog.write("[twig] bootstrap 出错: \(error)")
@@ -501,8 +496,7 @@ final class AppState: ObservableObject {
             // 之后不重新拉的话，侧边栏"Recent"顺序就跟后端记的对不上——新打开的这个
             // 不会立刻跳到最前面，得等下次重启 app 才刷新。这里顺手拉一次最新的。
             if let boot = try? await client.bootstrap() { recent = boot.recent }
-            if let st = status, !st.clean { await showWorkingCopy() }
-            else if let first = graph?.commits.first { await selectCommit(first.hash) }
+            // 换仓库后同样不自动选中（同 bootstrap()，对齐网页版的空态起步）。
         } catch {
             lastError = error.localizedDescription
         }
