@@ -40,11 +40,11 @@ final class AppState: ObservableObject {
 
     // MARK: - 提交图
     @Published var graph: Graph?
-    @Published var firstParent = false
-    @Published var limit = 500
+    @Published var firstParent = false { didSet { UserDefaults.standard.set(firstParent, forKey: "twig.firstParent") } }
+    @Published var limit = 500 { didSet { UserDefaults.standard.set(limit, forKey: "twig.limit") } }
 
     // MARK: - 详情面板
-    @Published var detailMode: DetailMode = .none
+    @Published var detailMode: DetailMode = .none { didSet { saveLastSelection() } }
     @Published var commitDetail: CommitDetail?
     @Published var rangeDetail: RangeDetail?
     @Published var selectedFile: DiffFile?
@@ -66,11 +66,13 @@ final class AppState: ObservableObject {
     // 注释正则）一份实现都不用抄第二遍到 Swift 里，将来 Go 那边 /api/patch 的口径
     // 变了，这边也不用跟着改。
     @Published var currentDiffRequest: DiffRequest?
-    @Published var diffViewMode: DiffViewMode = .unified
+    @Published var diffViewMode: DiffViewMode = .unified {
+        didSet { UserDefaults.standard.set(diffViewMode == .split ? "split" : "unified", forKey: "twig.diffViewMode") }
+    }
 
     // MARK: - diff 过滤开关（跟浏览器版同名同义）
-    @Published var ignoreWhitespace = false
-    @Published var ignoreComments = false
+    @Published var ignoreWhitespace = false { didSet { UserDefaults.standard.set(ignoreWhitespace, forKey: "twig.ignoreWhitespace") } }
+    @Published var ignoreComments = false { didSet { UserDefaults.standard.set(ignoreComments, forKey: "twig.ignoreComments") } }
 
     @Published var busy = false
     @Published var lastError: String?
@@ -90,7 +92,47 @@ final class AppState: ObservableObject {
     @Published var autoRefresh: Bool = true
 
     // 侧边栏显隐（菜单 View > Toggle Sidebar，⌥⌘S）。
-    @Published var sidebarVisible: Bool = true
+    @Published var sidebarVisible: Bool = true { didSet { UserDefaults.standard.set(sidebarVisible, forKey: "twig.sidebarVisible") } }
+
+    // MARK: - 偏好持久化（UserDefaults，不碰后端 state.json）
+    //
+    // 记住的都是界面偏好：开关、视图模式、每个仓库上次在看什么。重启后回到
+    // 离开时的样子——这是 Mac 应用的默认行为，不是功能。读初值在 init，
+    // 写回靠上面各属性的 didSet（init 里赋值不触发 didSet，不会先写一遍）。
+
+    init() {
+        let d = UserDefaults.standard
+        if d.object(forKey: "twig.firstParent") != nil { firstParent = d.bool(forKey: "twig.firstParent") }
+        if let l = d.object(forKey: "twig.limit") as? Int { limit = l }
+        if let m = d.string(forKey: "twig.diffViewMode") { diffViewMode = m == "split" ? .split : .unified }
+        ignoreWhitespace = d.bool(forKey: "twig.ignoreWhitespace")
+        ignoreComments = d.bool(forKey: "twig.ignoreComments")
+        if d.object(forKey: "twig.sidebarVisible") != nil { sidebarVisible = d.bool(forKey: "twig.sidebarVisible") }
+    }
+
+    // 每个仓库记住"上次在看什么"（提交 hash 或工作区），下次打开这个仓库时还原。
+    private func saveLastSelection() {
+        guard let path = repo?.path else { return }
+        let v: String
+        switch detailMode {
+        case .commit(let h): v = h
+        case .workingCopy: v = "workingCopy"
+        default: v = ""
+        }
+        UserDefaults.standard.set(v, forKey: "twig.lastSel.\(path)")
+    }
+
+    // 还原上次在这个仓库看的东西；提交已不在当前图上（被筛掉或超出 limit）就放弃。
+    private func restoreLastSelection() async {
+        guard let path = repo?.path else { return }
+        let last = UserDefaults.standard.string(forKey: "twig.lastSel.\(path)") ?? ""
+        if last == "workingCopy" {
+            if let st = status, !st.clean { await showWorkingCopy() }
+        } else if !last.isEmpty,
+                  graph?.commits.contains(where: { $0.hash == last }) == true {
+            await selectCommit(last)
+        }
+    }
 
     // MARK: - 比较模式（Cmd/Ctrl 勾第二个提交）
     // 比较状态完全由 detailMode .compare(from:to:) 承载，不需要额外的 anchor 字段。
@@ -154,10 +196,10 @@ final class AppState: ObservableObject {
                 repo = r
                 selectedRefs = Set(r.selectedRefs)
                 await refreshAll()
-                // 启动后不自动选中任何东西（对齐网页版：selCommit=null、wipMode=false，
-                // 详情面板显示空态）。之前"脏工作区自动进工作区视图"会在界面上同时点亮
-                // 侧边栏 Working Copy 行和图区 Uncommitted changes 行——两条蓝带高度不一、
-                // 上下错位，横跨分隔线看着像渲染故障（2026-08-29 用户截图报的）。
+                // 启动后还原上次在这个仓库看的东西（提交或工作区，存 UserDefaults）。
+                // 不是默认进工作区——那会让侧边栏和图区两行同时高亮，看着像排版坏了；
+                // 只还原用户自己离开时的选择。
+                await restoreLastSelection()
             }
         } catch {
             DebugLog.write("[twig] bootstrap 出错: \(error)")
@@ -332,6 +374,60 @@ final class AppState: ObservableObject {
         currentDiffRequest = .init(mode: .work, path: f.path, orig: f.origPath,
                                     staged: f.staged, untracked: f.untracked,
                                     ignoreWhitespace: ignoreWhitespace, ignoreComments: ignoreComments)
+    }
+
+    // MARK: - 文件键盘导航（⌘↑/⌘↓，审 diff 手不离键盘）
+
+    // 在当前详情模式的文件清单里把选中往前/往后挪一个，到顶/到底就停住（不循环）。
+    func selectAdjacentFile(_ delta: Int) async {
+        switch detailMode {
+        case .commit(let h):
+            guard let files = commitDetail?.files,
+                  let path = adjacentPath(files.map { $0.path }, delta: delta),
+                  let f = files.first(where: { $0.path == path }) else { return }
+            await selectFile(f, inCommit: h)
+        case .compare(let from, let to):
+            guard let files = rangeDetail?.files,
+                  let path = adjacentPath(files.map { $0.path }, delta: delta),
+                  let f = files.first(where: { $0.path == path }) else { return }
+            await selectFile(f, inRange: (from, to))
+        case .workingCopy:
+            guard let st = status else { return }
+            // 顺序跟 WorkingCopyPane 的选中查找一致：staged → conflicts → unstaged。
+            let all = st.staged + st.conflicts + st.unstaged
+            guard let path = adjacentPath(all.map { $0.path }, delta: delta),
+                  let f = all.first(where: { $0.path == path }) else { return }
+            await selectWorkingCopyFile(f)
+        case .none: break
+        }
+    }
+
+    private func adjacentPath(_ paths: [String], delta: Int) -> String? {
+        guard !paths.isEmpty else { return nil }
+        let i = paths.firstIndex(of: selectedFile?.path ?? "") ?? (delta > 0 ? -1 : paths.count)
+        let j = i + delta
+        guard j >= 0, j < paths.count else { return nil }
+        return paths[j]
+    }
+
+    // MARK: - 文件系统动作（工作区/详情文件行的右键菜单用）
+
+    func fileURL(_ relativePath: String) -> URL? {
+        repo.map { URL(fileURLWithPath: $0.path).appendingPathComponent(relativePath) }
+    }
+
+    func revealInFinder(_ relativePath: String) {
+        guard let u = fileURL(relativePath) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([u])
+    }
+
+    func openFile(_ relativePath: String) {
+        guard let u = fileURL(relativePath) else { return }
+        NSWorkspace.shared.open(u)
+    }
+
+    func copyFilePath(_ relativePath: String) {
+        if let u = fileURL(relativePath) { copyToClipboard(u.path) }
     }
 
     // MARK: - 分支勾选 / 视图选项
@@ -516,7 +612,8 @@ final class AppState: ObservableObject {
             // 之后不重新拉的话，侧边栏"Recent"顺序就跟后端记的对不上——新打开的这个
             // 不会立刻跳到最前面，得等下次重启 app 才刷新。这里顺手拉一次最新的。
             if let boot = try? await client.bootstrap() { recent = boot.recent }
-            // 换仓库后同样不自动选中（同 bootstrap()，对齐网页版的空态起步）。
+            // 换仓库后还原那个仓库上次的选择（同 bootstrap()）。
+            await restoreLastSelection()
         } catch {
             lastError = error.localizedDescription
         }

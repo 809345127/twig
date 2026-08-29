@@ -6,10 +6,11 @@ struct SidebarView: View {
 
     // 分组折叠状态：Branches/Stashes 默认展开（常用且通常不多），
     // Remote Branches/Tags 默认折叠（colt 这种仓库几百个 tag，全列出来要滚半天）。
-    @State private var branchesExpanded = true
-    @State private var remotesExpanded = false
-    @State private var tagsExpanded = false
-    @State private var stashesExpanded = true
+    // @AppStorage 直接持久化到 UserDefaults，重启后保持上次的折叠状态。
+    @AppStorage("twig.sidebar.branchesExpanded") private var branchesExpanded = true
+    @AppStorage("twig.sidebar.remotesExpanded") private var remotesExpanded = false
+    @AppStorage("twig.sidebar.tagsExpanded") private var tagsExpanded = false
+    @AppStorage("twig.sidebar.stashesExpanded") private var stashesExpanded = true
 
     var heads: [Ref] { filterRefs(app.refs.filter { $0.kind == "head" }) }
     var remotes: [Ref] { filterRefs(app.refs.filter { $0.kind == "remote" }) }
@@ -45,23 +46,9 @@ struct SidebarView: View {
             if !app.recent.isEmpty {
                 Section("Recent") {
                     ForEach(app.recent, id: \.self) { p in
-                        HStack {
-                            Button {
-                                Task { await app.openRepo(p) }
-                            } label: {
-                                Text((p as NSString).lastPathComponent).lineLimit(1)
-                            }
-                            .buttonStyle(.plain)
-                            Spacer()
-                            Button {
-                                Task { await app.forgetRepo(p) }
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Remove from recent list")
-                        }
+                        RecentRow(path: p,
+                                  open: { Task { await app.openRepo(p) } },
+                                  forget: { Task { await app.forgetRepo(p) } })
                     }
                 }
             }
@@ -95,15 +82,7 @@ struct SidebarView: View {
                         }
                     }
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(Color.accentColor)
-                    Button {
-                        if let r = app.askInput(title: "New Branch", message: "Starting from the current HEAD",
-                                                 placeholder: "feature/my-branch",
-                                                 checkboxLabel: "Check out after creating", checkboxChecked: true) {
-                            Task { await app.runOp(.init(action: "createBranch", name: r.value,
-                                                          startPoint: "HEAD", checkout: r.checked),
-                                                    label: "Create branch \(r.value)") }
-                        }
-                    } label: { Image(systemName: "plus") }
+                    Button { app.newBranchPrompt() } label: { Image(systemName: "plus") }
                     .buttonStyle(.plain).help("New branch")
                 }
             }
@@ -112,9 +91,9 @@ struct SidebarView: View {
 
             if branchesExpanded {
                 ForEach(heads, id: \.fullName) { ref in
-                    RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName)) {
-                        app.toggleRef(ref.fullName)
-                    }
+                    RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName),
+                           toggle: { app.toggleRef(ref.fullName) },
+                           checkout: { if !ref.isHead { Task { await app.checkoutRef(ref) } } })
                     .contextMenu { refContextMenu(ref) }
                     .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 8))
                 }
@@ -137,9 +116,9 @@ struct SidebarView: View {
 
                 if remotesExpanded {
                     ForEach(remotes, id: \.fullName) { ref in
-                        RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName)) {
-                            app.toggleRef(ref.fullName)
-                        }
+                        RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName),
+                               toggle: { app.toggleRef(ref.fullName) },
+                               checkout: { Task { await app.checkoutRef(ref) } })
                         .contextMenu { refContextMenu(ref) }
                         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 8))
                     }
@@ -193,19 +172,7 @@ struct SidebarView: View {
                     Text("Stashes").sectionHeaderFont
                     Text("(\(app.stashes.count))").sectionHeaderFont
                     Spacer()
-                    Button {
-                        if app.status?.clean ?? true {
-                            app.setStatus("Working copy is clean — nothing to stash", kind: "err")
-                            return
-                        }
-                        if let r = app.askInput(title: "Stash Changes",
-                                                 message: "Put the current uncommitted changes aside.",
-                                                 placeholder: "Message (optional)",
-                                                 checkboxLabel: "Include untracked files", checkboxChecked: true) {
-                            Task { await app.runOp(.init(action: "stashPush", message: r.value,
-                                                          includeUntracked: r.checked), label: "Stash") }
-                        }
-                    } label: { Image(systemName: "plus") }
+                    Button { app.stashPrompt() } label: { Image(systemName: "plus") }
                     .buttonStyle(.plain).help("Stash changes")
                 }
             }
@@ -309,12 +276,16 @@ private struct RefRow: View {
     let ref: Ref
     let checked: Bool
     let toggle: () -> Void
+    let checkout: () -> Void
 
     var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 6) {
+        HStack(spacing: 6) {
+            Button(action: toggle) {
                 Image(systemName: checked ? "checkmark.square.fill" : "square")
                     .foregroundStyle(checked ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            HStack(spacing: 6) {
                 // 当前分支加粗——几十条分支里一眼定位，SourceTree 同款惯例。
                 Text(ref.name).lineLimit(1)
                     .fontWeight(ref.isHead ? .semibold : .regular)
@@ -328,12 +299,43 @@ private struct RefRow: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            // 双击 = checkout（SourceTree/Fork 的肌肉记忆），单击 = 勾选。
+            // 系统靠 count 消歧：单击会等一个双击间隔才触发，换来双击可用。
+            .onTapGesture(count: 2) { checkout() }
+            .onTapGesture(count: 1) { toggle() }
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         // 跟网页版复选框的 title 同一句话："都不勾"不是"都不画"，而是"画全部"。
-        .help("When anything is checked, the graph draws only checked branches")
+        .help("When anything is checked, the graph draws only checked branches. Double-click to check out.")
+    }
+}
+
+// Recent 行：× 按钮只在 hover 时出现——常驻 10 个 × 是纯视觉噪音，还容易误点。
+private struct RecentRow: View {
+    let path: String
+    let open: () -> Void
+    let forget: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack {
+            Button(action: open) {
+                Text((path as NSString).lastPathComponent).lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Button(action: forget) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovered ? 1 : 0)
+            .help("Remove from recent list")
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .help(path)
     }
 }
 

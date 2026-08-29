@@ -39,6 +39,26 @@ struct TwigMacApp: App {
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
             }
+            // Repository 菜单：把核心动词收进菜单栏。菜单不只是入口——
+            // 它是"这个 app 能干什么"的说明书，顺带把快捷键亮出来。
+            CommandMenu("Repository") {
+                Button("Fetch") { Task { await app.runOp(.init(action: "fetch"), label: "Fetch") } }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Button("Pull") { Task { await app.runOp(.init(action: "pull"), label: "Pull") } }
+                    .keyboardShortcut("l", modifiers: [.command, .option])
+                Button("Push") { Task { await app.runOp(.init(action: "push"), label: "Push") } }
+                    .keyboardShortcut("p", modifiers: [.command, .option])
+                Divider()
+                Button("New Branch…") { app.newBranchPrompt() }
+                    .keyboardShortcut("b", modifiers: [.command, .shift])
+                Button("Stash Changes…") { app.stashPrompt() }
+                Divider()
+                // diff 审阅的文件间导航：手不离键盘过完一遍改动。
+                Button("Previous File") { Task { await app.selectAdjacentFile(-1) } }
+                    .keyboardShortcut(.upArrow, modifiers: .command)
+                Button("Next File") { Task { await app.selectAdjacentFile(1) } }
+                    .keyboardShortcut(.downArrow, modifiers: .command)
+            }
             // Esc 退出比较模式：web 版 Esc 先关弹窗、没弹窗就退出比较。
             CommandGroup(after: .help) {
                 Button("Exit Compare") {

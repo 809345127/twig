@@ -25,9 +25,16 @@ struct ContentView: View {
                 if app.repo != nil {
                     MainLayout()
                 } else {
-                    Text("No repository open yet")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // 空仓库引导：别只摆一行灰字，直接告诉用户下一步是什么。
+                    VStack(spacing: 12) {
+                        Image(systemName: "folder.badge.questionmark")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.secondary)
+                        Text("No repository open yet").font(.headline)
+                        Button("Open Repository…") { app.openRepoPicker() }
+                            .controlSize(.large)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }

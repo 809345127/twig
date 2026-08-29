@@ -166,6 +166,24 @@ private struct WorkingFileRow: View {
                 }
             }
         }
+        // 双击 = stage/unstage 切换，不用瞄准行尾的小字按钮。
+        .onTapGesture(count: 2) {
+            Task {
+                if staged {
+                    await app.runOp(.init(action: "unstage", paths: [f.path]), label: "Unstage \(f.path)")
+                } else if !conflict {
+                    await app.runOp(.init(action: "stage", paths: [f.path]), label: "Stage \(f.path)")
+                }
+            }
+        }
+        // Mac 应用的桌上赌注：Reveal in Finder / 打开 / 复制路径。
+        .contextMenu {
+            Button("Open") { app.openFile(f.path) }
+            Button("Reveal in Finder") { app.revealInFinder(f.path) }
+            Divider()
+            Button("Copy Path") { app.copyFilePath(f.path) }
+            Button("Copy Relative Path") { app.copyToClipboard(f.path) }
+        }
     }
 
     private var statusChar: String {

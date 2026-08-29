@@ -81,6 +81,7 @@ struct DetailPane: View {
 // 提交详情顶部的元数据区：subject / author / date / hash / parents / body。
 // 对应 web 的 renderCommitDetail 里 dSubject / dMeta / dBody 那三块。
 struct CommitMetaHeader: View {
+    @EnvironmentObject var app: AppState
     let detail: CommitDetail
 
     var body: some View {
@@ -92,13 +93,34 @@ struct CommitMetaHeader: View {
             HStack(spacing: 12) {
                 Label(detail.authorName, systemImage: "person")
                 Label(formattedDate, systemImage: "clock")
-                Label(detail.short, systemImage: "number")
-                    .font(.system(.caption, design: .monospaced))
-                if detail.parents.count > 1 {
-                    Label("\(detail.parents.count) parents", systemImage: "arrow.triangle.merge")
-                } else if let p = detail.parents.first {
-                    Label(String(p.prefix(8)), systemImage: "arrow.left")
+                // hash 点击复制完整 SHA（保持 Label 的灰色外观，不长成按钮）。
+                Button { app.copyToClipboard(detail.hash) } label: {
+                    Label(detail.short, systemImage: "number")
                         .font(.system(.caption, design: .monospaced))
+                }
+                .buttonStyle(.plain)
+                .help("Click to copy the full SHA")
+                // parent 可点击：沿历史链往回走是浏览提交最常见的路径。
+                // 跳过去并把它滚到图区中央；多个 parent（合并提交）给菜单选。
+                if detail.parents.count > 1 {
+                    Menu {
+                        ForEach(detail.parents, id: \.self) { p in
+                            Button(String(p.prefix(8))) { jumpTo(p) }
+                        }
+                    } label: {
+                        Label("\(detail.parents.count) parents", systemImage: "arrow.triangle.merge")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Jump to a parent commit")
+                } else if let p = detail.parents.first {
+                    Button { jumpTo(p) } label: {
+                        Label(String(p.prefix(8)), systemImage: "arrow.left")
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Jump to the parent commit")
                 }
                 Spacer()
             }
@@ -116,6 +138,11 @@ struct CommitMetaHeader: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func jumpTo(_ hash: String) {
+        app.requestGraphScroll(hash)
+        Task { await app.selectCommit(hash) }
     }
 
     private var formattedDate: String {
@@ -158,6 +185,7 @@ struct FileListView: View {
 }
 
 struct FileRow: View {
+    @EnvironmentObject var app: AppState
     let file: DiffFile
 
     var body: some View {
@@ -175,6 +203,14 @@ struct FileRow: View {
             }
         }
         .help(file.origPath.isEmpty ? file.path : "\(file.origPath) → \(file.path)")
+        // 跟工作区文件行同一套文件动作（打开的是工作区里的当前版本）。
+        .contextMenu {
+            Button("Open") { app.openFile(file.path) }
+            Button("Reveal in Finder") { app.revealInFinder(file.path) }
+            Divider()
+            Button("Copy Path") { app.copyFilePath(file.path) }
+            Button("Copy Relative Path") { app.copyToClipboard(file.path) }
+        }
     }
 }
 
