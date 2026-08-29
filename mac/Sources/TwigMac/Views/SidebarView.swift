@@ -4,6 +4,13 @@ struct SidebarView: View {
     @EnvironmentObject var app: AppState
     @State private var branchFilter: String = ""
 
+    // 分组折叠状态：Branches/Stashes 默认展开（常用且通常不多），
+    // Remote Branches/Tags 默认折叠（colt 这种仓库几百个 tag，全列出来要滚半天）。
+    @State private var branchesExpanded = true
+    @State private var remotesExpanded = false
+    @State private var tagsExpanded = false
+    @State private var stashesExpanded = true
+
     var heads: [Ref] { filterRefs(app.refs.filter { $0.kind == "head" }) }
     var remotes: [Ref] { filterRefs(app.refs.filter { $0.kind == "remote" }) }
     var tags: [Ref] { filterRefs(app.refs.filter { $0.kind == "tag" }) }
@@ -59,41 +66,33 @@ struct SidebarView: View {
                 }
             }
 
-            Section {
-                ForEach(heads, id: \.fullName) { ref in
-                    RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName)) {
-                        app.toggleRef(ref.fullName)
-                    }
-                    .contextMenu { refContextMenu(ref) }
-                }
-            } header: {
+            // Branches：可折叠，标题显示分支数，右侧保留快捷筛选按钮。
+            Button {
+                withAnimation { branchesExpanded.toggle() }
+            } label: {
                 HStack(spacing: 4) {
+                    Image(systemName: branchesExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(.secondary)
                     Text("Branches")
+                    Text("(\(heads.count))").foregroundStyle(.secondary)
                     Spacer()
-                    // 快捷筛选：全选 / 不选 / 仅当前。对应 web 版 data-select 按钮。
                     Button("All") {
                         app.selectedRefs = Set(app.refs.filter { $0.kind == "head" }.map { $0.fullName })
                         Task { await app.reloadGraphOnly() }
                     }
-                    .buttonStyle(.plain)
-                    .font(.caption2)
-                    .foregroundStyle(.blue)
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
                     Button("None") {
                         app.selectedRefs = []
                         Task { await app.reloadGraphOnly() }
                     }
-                    .buttonStyle(.plain)
-                    .font(.caption2)
-                    .foregroundStyle(.blue)
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
                     Button("Current") {
                         if let cur = app.refs.first(where: { $0.kind == "head" && $0.isHead }) {
                             app.selectedRefs = [cur.fullName]
                             Task { await app.reloadGraphOnly() }
                         }
                     }
-                    .buttonStyle(.plain)
-                    .font(.caption2)
-                    .foregroundStyle(.blue)
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
                     Button {
                         if let r = app.askInput(title: "New Branch", message: "Starting from the current HEAD",
                                                  placeholder: "feature/my-branch",
@@ -102,16 +101,38 @@ struct SidebarView: View {
                                                           startPoint: "HEAD", checkout: r.checked),
                                                     label: "Create branch \(r.value)") }
                         }
-                    } label: {
-                        Image(systemName: "plus")
+                    } label: { Image(systemName: "plus") }
+                    .buttonStyle(.plain).help("New branch")
+                }
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+
+            if branchesExpanded {
+                ForEach(heads, id: \.fullName) { ref in
+                    RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName)) {
+                        app.toggleRef(ref.fullName)
                     }
-                    .buttonStyle(.plain)
-                    .help("New branch")
+                    .contextMenu { refContextMenu(ref) }
                 }
             }
 
             if !remotes.isEmpty {
-                Section("Remote Branches") {
+                Button {
+                    withAnimation { remotesExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: remotesExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text("Remote Branches")
+                        Text("(\(remotes.count))").foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+
+                if remotesExpanded {
                     ForEach(remotes, id: \.fullName) { ref in
                         RefRow(ref: ref, checked: app.selectedRefs.contains(ref.fullName)) {
                             app.toggleRef(ref.fullName)
@@ -122,10 +143,23 @@ struct SidebarView: View {
             }
 
             if !tags.isEmpty {
-                Section("Tags") {
+                Button {
+                    withAnimation { tagsExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: tagsExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text("Tags")
+                        Text("(\(tags.count))").foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+
+                if tagsExpanded {
                     ForEach(tags, id: \.fullName) { ref in
                         Button {
-                            // 单击 tag = 在图上定位到它
                             locateInGraph(ref.hash)
                         } label: {
                             Label(ref.name, systemImage: "tag")
@@ -144,7 +178,36 @@ struct SidebarView: View {
                 }
             }
 
-            Section {
+            // Stashes：可折叠，标题右侧保留 + 按钮。
+            Button {
+                withAnimation { stashesExpanded.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: stashesExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text("Stashes")
+                    Text("(\(app.stashes.count))").foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        if app.status?.clean ?? true {
+                            app.setStatus("Working copy is clean — nothing to stash", kind: "err")
+                            return
+                        }
+                        if let r = app.askInput(title: "Stash Changes",
+                                                 message: "Put the current uncommitted changes aside.",
+                                                 placeholder: "Message (optional)",
+                                                 checkboxLabel: "Include untracked files", checkboxChecked: true) {
+                            Task { await app.runOp(.init(action: "stashPush", message: r.value,
+                                                          includeUntracked: r.checked), label: "Stash") }
+                        }
+                    } label: { Image(systemName: "plus") }
+                    .buttonStyle(.plain).help("Stash changes")
+                }
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+
+            if stashesExpanded {
                 ForEach(app.stashes) { s in
                     Text(s.subject).font(.callout).lineLimit(1)
                         .contextMenu {
@@ -165,28 +228,6 @@ struct SidebarView: View {
                                 }
                             }
                         }
-                }
-            } header: {
-                HStack {
-                    Text("Stashes")
-                    Spacer()
-                    Button {
-                        if app.status?.clean ?? true {
-                            app.setStatus("Working copy is clean — nothing to stash", kind: "err")
-                            return
-                        }
-                        if let r = app.askInput(title: "Stash Changes",
-                                                 message: "Put the current uncommitted changes aside; you can bring them back later.",
-                                                 placeholder: "Message (optional)",
-                                                 checkboxLabel: "Include untracked files", checkboxChecked: true) {
-                            Task { await app.runOp(.init(action: "stashPush", message: r.value,
-                                                          includeUntracked: r.checked), label: "Stash") }
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.plain)
-                    .help("Stash changes")
                 }
             }
         }
