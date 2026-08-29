@@ -481,8 +481,20 @@ final class AppState: ObservableObject {
             let info = try await client.open(path: path)
             repo = info
             selectedRefs = Set(info.selectedRefs)
+            // ⚠️ 换仓库瞬间必须把旧仓库的所有展示数据清掉。refreshAll() 是网络请求，
+            // 返回前界面会用还挂在 @Published 上的旧数据渲染——结果就是"工具栏写着
+            // 新仓库名、图区却是旧仓库的提交图"。跟网页版 2026-08-28 修的那个
+            // "换仓库时旧内容画到新界面上"是同一个 bug，这里别只清 detailMode。
             detailMode = .none
             selectedFile = nil
+            commitDetail = nil
+            rangeDetail = nil
+            currentDiffRequest = nil
+            graph = nil
+            refs = []
+            head = nil
+            stashes = []
+            status = nil
             await refreshAll()
             // 后端 /api/open 会把这次打开的仓库记进它自己的"最近"列表（排到最前面），
             // 但 Swift 这边的 recent 只在启动那次 bootstrap() 时取过一次快照，换仓库
