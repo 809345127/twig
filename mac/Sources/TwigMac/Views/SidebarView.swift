@@ -330,6 +330,8 @@ private struct RefRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 跟网页版复选框的 title 同一句话："都不勾"不是"都不画"，而是"画全部"。
+        .help("When anything is checked, the graph draws only checked branches")
     }
 }
 
