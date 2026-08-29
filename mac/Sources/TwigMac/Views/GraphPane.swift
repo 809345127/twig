@@ -35,9 +35,11 @@ struct GraphPane: View {
             Divider()
             if let g = app.graph, let geo = geometry {
                 if g.commits.isEmpty {
+                    // 同 DetailPane 的空态：ContentUnavailableView 不撑 frame 会把布局拖垮。
                     ContentUnavailableView(
                         app.selectedRefs.isEmpty ? "This repository has no commits yet." : "No commits on the checked branches.",
                         systemImage: "point.3.connected.trianglepath.dotted")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     // ScrollViewReader 让 "Locate in graph" 能把目标行滚到可视区中央。
                     ScrollViewReader { proxy in

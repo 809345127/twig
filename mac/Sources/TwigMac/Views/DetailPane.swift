@@ -7,7 +7,11 @@ struct DetailPane: View {
         Group {
             switch app.detailMode {
             case .none:
+                // ⚠️ ContentUnavailableView 不会自己撑满可用空间，只按文字理想宽度
+                // 渲染——不套这个 frame 的话，空态会把整条 VSplitView/HSplitView 的
+                // 理想宽度拖垮，整个窗口内容收缩成一条居中的窄带（2026-08-29 实测）。
                 ContentUnavailableView("Select a commit", systemImage: "doc.text.magnifyingglass")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .commit(let hash):
                 if let d = app.commitDetail {
                     VStack(spacing: 0) {
