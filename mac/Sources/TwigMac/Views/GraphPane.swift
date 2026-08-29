@@ -33,23 +33,95 @@ struct GraphPane: View {
                         app.selectedRefs.isEmpty ? "This repository has no commits yet." : "No commits on the checked branches.",
                         systemImage: "point.3.connected.trianglepath.dotted")
                 } else {
-                    List(Array(g.commits.enumerated()), id: \.element.id, selection: selectionBinding) { idx, commit in
-                        CommitRowView(commit: commit, row: geo.rows[idx], graphWidth: geo.laneWidth,
-                                      isHead: app.head?.hash == commit.hash)
-                            .tag(commit.hash)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
-                            .listRowSeparator(.hidden)
+                    List(selection: selectionBinding) {
+                        // 未提交改动行：有未暂存/已暂存文件时显示在图最上面。
+                        if let st = app.status, !st.clean {
+                            WorkingCopyRow(fileCount: st.staged.count + st.unstaged.count + st.conflicts.count)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
+                                .listRowSeparator(.hidden)
+                        }
+                        ForEach(Array(g.commits.enumerated()), id: \.element.id) { idx, commit in
+                            CommitRowView(commit: commit, row: geo.rows[idx], graphWidth: geo.laneWidth,
+                                          isHead: app.head?.hash == commit.hash,
+                                          selected: isSelected(commit.hash),
+                                          compareFrom: isCompareFrom(commit.hash),
+                                          compareTo: isCompareTo(commit.hash))
+                                .tag(commit.hash)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                                .contextMenu { commitContextMenu(commit) }
+                        }
                     }
                     .listStyle(.plain)
                 }
+                GraphStats()
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
 
-    // List 原生的单选高亮 + 点击回调；Cmd 点第二个提交进比较模式的逻辑放在 CommitRowView 的手势里，
-    // 这里的 selection 只负责"点了哪一行"的基本情形。
+    // 选中状态判断：传给 CommitRowView 让它自己画背景（hover + 选中 + 比较模式统一处理）。
+    private func isSelected(_ hash: String) -> Bool {
+        if case .commit(let h) = app.detailMode { return h == hash }
+        return false
+    }
+
+    private func isCompareFrom(_ hash: String) -> Bool {
+        if case .compare(let from, _) = app.detailMode { return hash == from }
+        return false
+    }
+
+    private func isCompareTo(_ hash: String) -> Bool {
+        if case .compare(_, let to) = app.detailMode { return hash == to }
+        return false
+    }
+
+    // 提交右键菜单：对应 web 的 showCommitMenu。
+    @ViewBuilder
+    private func commitContextMenu(_ c: Commit) -> some View {
+        Text("\(c.short)  \(c.subject)").font(.caption).foregroundStyle(.secondary)
+        // 如果当前选中了另一个提交，给出"比较"入口。
+        if case .commit(let anchor) = app.detailMode, anchor != c.hash {
+            Button("Compare with \(String(anchor.prefix(8)))") {
+                Task { await app.compareWith(c.hash) }
+            }
+            Divider()
+        }
+        Button("Checkout this commit (detached HEAD)") {
+            Task { await app.checkoutCommit(c.hash) }
+        }
+        Button("Create branch here…") {
+            if let r = app.askInput(title: "New Branch", message: "Starting from \(c.short)",
+                                     placeholder: "feature/my-branch",
+                                     checkboxLabel: "Check out after creating", checkboxChecked: true) {
+                Task { await app.runOp(.init(action: "createBranch", name: r.value,
+                                              startPoint: c.hash, checkout: r.checked),
+                                        label: "Create branch \(r.value)") }
+            }
+        }
+        Divider()
+        Button("Merge into current branch") {
+            Task { await app.runOp(.init(action: "merge", target: c.hash), label: "Merge \(c.short)") }
+        }
+        Button("Rebase current branch onto this") {
+            Task { await app.runOp(.init(action: "rebase", target: c.hash), label: "Rebase onto \(c.short)") }
+        }
+        Divider()
+        Button("Copy full SHA") { app.copyToClipboard(c.hash) }
+        Button("Copy commit message") { app.copyToClipboard(c.subject) }
+        Divider()
+        Button("Reset current branch here (keep changes)") {
+            Task { await app.runOp(.init(action: "reset", target: c.hash, mode: "mixed"),
+                                    label: "Reset to \(c.short)") }
+        }
+        Button("Reset current branch here (discard changes)", role: .destructive) {
+            Task { await app.hardReset(to: c.hash) }
+        }
+    }
+
+    // List 原生的单选高亮 + 点击回调；Cmd 点第二个提交进比较模式。
     var selectionBinding: Binding<String?> {
         Binding(
             get: {
@@ -59,9 +131,6 @@ struct GraphPane: View {
             set: { newValue in
                 guard let hash = newValue else { return }
                 // 按住 Cmd 点第二个提交 = 比较两个版本，跟网页版的手势一致。
-                // List 的 selection 绑定本身不带修饰键信息，只能在这里读一下
-                // NSEvent 当前的按键状态——这是 AppKit 上判断"点击时是否按着某个键"
-                // 的标准做法，不需要额外的手势识别器。
                 if NSEvent.modifierFlags.contains(.command) {
                     Task { await app.compareWith(hash) }
                 } else {
@@ -72,17 +141,55 @@ struct GraphPane: View {
     }
 }
 
+// 图下面的统计行：对应 web 的 graphStat。
+struct GraphStats: View {
+    @EnvironmentObject var app: AppState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let g = app.graph {
+                Text("\(g.commits.count) commit\(g.commits.count == 1 ? "" : "s")")
+                Text("·")
+                Text("\(g.width) lane\(g.width == 1 ? "" : "s")")
+                Text("·")
+                if app.selectedRefs.isEmpty {
+                    Text("all branches")
+                } else {
+                    Text("\(app.selectedRefs.count) branch\(app.selectedRefs.count == 1 ? "" : "es")")
+                }
+                if app.firstParent {
+                    Text("·")
+                    Text("first parent only")
+                }
+            }
+            Spacer()
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 3)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+    }
+}
+
 struct GraphToolbar: View {
     @EnvironmentObject var app: AppState
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Toggle("First parent only", isOn: Binding(
                 get: { app.firstParent },
                 set: { app.setFirstParent($0) }
             ))
             .toggleStyle(.checkbox)
             .help("Follow only the first parent: merged-in branch detail is collapsed, leaving a single mainline")
+
+            Toggle("Auto refresh", isOn: Binding(
+                get: { app.autoRefresh },
+                set: { app.setAutoRefresh($0) }
+            ))
+            .toggleStyle(.checkbox)
+            .help("Automatically refresh when the repository changes outside twig")
 
             Spacer()
 

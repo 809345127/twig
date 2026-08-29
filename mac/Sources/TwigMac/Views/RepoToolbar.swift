@@ -16,39 +16,112 @@ struct RepoToolbar: ToolbarContent {
                         Text(h.detached ? "detached @ \(String(h.hash.prefix(8)))" : h.branch)
                             .font(.caption).foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)   // 分支名前后两段都有信息量（如
-                            // feature/…-cross-border），掐中间比掐尾巴更看得出是哪条分支
+                            .truncationMode(.middle)
                     }
                 }
                 // 系统给 .navigation 位置的自定义内容自动套一个圆角底，那层底几乎不留
-                // 内边距——文字第一个字符正好卡在圆角开始弯曲的地方，字没被真的裁掉
-                // （放大截图看字形完整），但视觉上就像被那道弧线咬掉一块。加左右内边距
-                // 把文字往里推，躲开圆角。宽度相应加大，保证文字实际可用宽度不缩水。
+                // 内边距——文字第一个字符正好卡在圆角开始弯曲的地方。加左右内边距
+                // 把文字往里推，躲开圆角。宽度相应加大。
                 .padding(.horizontal, 10)
                 .frame(width: 220, alignment: .leading)
             }
             .buttonStyle(.plain)
             .help("Open a different repository…")
         }
+
         ToolbarItemGroup {
-            Button { Task { await app.runOp(.init(action: "fetch")) } } label: {
-                Label("Fetch", systemImage: "arrow.triangle.2.circlepath")
+            Button { Task { await app.runOp(.init(action: "fetch"), label: "Fetch") } } label: {
+                Label("Fetch", systemImage: "arrow.down.circle")
             }
-            Button { Task { await app.runOp(.init(action: "pull")) } } label: {
-                Label("Pull", systemImage: "arrow.down.circle")
+            Button { Task { await app.runOp(.init(action: "pull"), label: "Pull") } } label: {
+                Label("Pull", systemImage: "arrow.down.left.circle")
             }
-            Button { Task { await app.runOp(.init(action: "push")) } } label: {
+            Button { Task { await app.runOp(.init(action: "push"), label: "Push") } } label: {
                 Label("Push", systemImage: "arrow.up.circle")
             }
         }
+
+        // 新建分支 / Stash：跟 web 版工具条上的两个按钮对齐。
+        ToolbarItemGroup {
+            Button {
+                if let r = app.askInput(title: "New Branch", message: "Starting from the current HEAD",
+                                         placeholder: "feature/my-branch",
+                                         checkboxLabel: "Check out after creating", checkboxChecked: true) {
+                    Task { await app.runOp(.init(action: "createBranch", name: r.value,
+                                                  startPoint: "HEAD", checkout: r.checked),
+                                            label: "Create branch \(r.value)") }
+                }
+            } label: {
+                Label("New Branch", systemImage: "plus.circle")
+            }
+            Button {
+                if app.status?.clean ?? true {
+                    app.setStatus("Working copy is clean — nothing to stash", kind: "err")
+                    return
+                }
+                if let r = app.askInput(title: "Stash Changes",
+                                         message: "Put the current uncommitted changes aside.",
+                                         placeholder: "Message (optional)",
+                                         checkboxLabel: "Include untracked files", checkboxChecked: true) {
+                    Task { await app.runOp(.init(action: "stashPush", message: r.value,
+                                                  includeUntracked: r.checked), label: "Stash") }
+                }
+            } label: {
+                Label("Stash", systemImage: "tray.and.arrow.down")
+            }
+        }
+
         // 独立成第二个 ToolbarItemGroup，让系统按标准的组间距处理——
-        // 之前用裸 Divider() 塞在同一组里，在"图标+文字"这种系统工具条显示模式下
-        // 会被拉伸成一根贯穿整个按钮高度的竖线，跟滚动条撞脸，还带出一大段空白。
+        // 之前用裸 Divider() 塞在同一组里，在"图标+文字"模式下会被拉伸成竖线。
         ToolbarItemGroup {
             Button { Task { await app.refreshAll() } } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .disabled(app.busy)
+        }
+    }
+}
+
+// merge / rebase 中途的状态横幅：显示当前在什么操作中，给 Continue / Abort 按钮。
+// 对应 web 版 renderToolbar 里 repoState 那一块。放在 MainLayout 里、图工具条下面。
+struct ConflictStateBanner: View {
+    @EnvironmentObject var app: AppState
+
+    var body: some View {
+        if let state = app.status?.state, !state.isEmpty {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("\(label) — resolve conflicts to continue")
+                    .font(.callout)
+                Spacer()
+                // merge 没有 continue（merge 冲突解决完直接 commit 就行），
+                // rebase/cherry-pick/revert 才有 continue。
+                if state != "merge" {
+                    Button("Continue") {
+                        Task { await app.runOp(.init(action: "continue", state: state), label: "Continue \(label)") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                }
+                Button("Abort") {
+                    Task { await app.runOp(.init(action: "abort", state: state), label: "Abort \(label)") }
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color.orange.opacity(0.1))
+        }
+    }
+
+    private var label: String {
+        guard let state = app.status?.state else { return "" }
+        switch state {
+        case "merge": return "Merging"
+        case "rebase": return "Rebasing"
+        case "cherry-pick": return "Cherry-picking"
+        case "revert": return "Reverting"
+        default: return state.capitalized
         }
     }
 }

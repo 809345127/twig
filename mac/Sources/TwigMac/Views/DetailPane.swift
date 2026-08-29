@@ -9,14 +9,18 @@ struct DetailPane: View {
             ContentUnavailableView("Select a commit", systemImage: "doc.text.magnifyingglass")
         case .commit(let hash):
             if let d = app.commitDetail {
-                HSplitView {
-                    FileListView(
-                        files: d.files,
-                        selectedPath: app.selectedFile?.path,
-                        header: shortHeader(hash: d.hash, subject: d.subject)
-                    ) { f in Task { await app.selectFile(f, inCommit: hash) } }
-                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
-                    DiffPanelView()
+                VStack(spacing: 0) {
+                    CommitMetaHeader(detail: d)
+                    Divider()
+                    HSplitView {
+                        FileListView(
+                            files: d.files,
+                            selectedPath: app.selectedFile?.path,
+                            header: d.files.isEmpty ? "(this commit changes no files)" : "\(plural(d.files.count)) changed"
+                        ) { f in Task { await app.selectFile(f, inCommit: hash) } }
+                        .frame(minWidth: 220, idealWidth: 280, maxWidth: 420)
+                        DiffPanelView()
+                    }
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -62,11 +66,56 @@ struct DetailPane: View {
         }
     }
 
-    private func shortHeader(hash: String, subject: String) -> String {
-        "\(String(hash.prefix(8)))  \(subject)"
+    private func plural(_ n: Int) -> String { n == 1 ? "1 file" : "\(n) files" }
+}
+
+// 提交详情顶部的元数据区：subject / author / date / hash / parents / body。
+// 对应 web 的 renderCommitDetail 里 dSubject / dMeta / dBody 那三块。
+struct CommitMetaHeader: View {
+    let detail: CommitDetail
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(detail.subject)
+                .font(.headline)
+                .lineLimit(2)
+
+            HStack(spacing: 12) {
+                Label(detail.authorName, systemImage: "person")
+                Label(formattedDate, systemImage: "clock")
+                Label(detail.short, systemImage: "number")
+                    .font(.system(.caption, design: .monospaced))
+                if detail.parents.count > 1 {
+                    Label("\(detail.parents.count) parents", systemImage: "arrow.triangle.merge")
+                } else if let p = detail.parents.first {
+                    Label(String(p.prefix(8)), systemImage: "arrow.left")
+                        .font(.system(.caption, design: .monospaced))
+                }
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if !detail.body.isEmpty {
+                Text(detail.body)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func plural(_ n: Int) -> String { n == 1 ? "1 file" : "\(n) files" }
+    private var formattedDate: String {
+        let date = Date(timeIntervalSince1970: TimeInterval(detail.timestamp))
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: date)
+    }
 }
 
 struct FileListView: View {
