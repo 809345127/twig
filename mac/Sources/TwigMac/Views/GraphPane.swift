@@ -13,6 +13,12 @@ enum GraphMetrics {
     static let pad: CGFloat = 10
 
     static func laneX(_ lane: Int) -> CGFloat { pad + CGFloat(lane) * laneWidth + laneWidth / 2 }
+
+    // 图列（画布）总宽度：跟网页版 graphW = max(60, GRAPH_PAD*2 + width*LANE_W) 一致。
+    // 所有行（提交行 + 未提交改动行）都用这个值，文字列才能垂直对齐。
+    static func graphColumnWidth(lanes: Int) -> CGFloat {
+        max(60, pad * 2 + CGFloat(lanes) * laneWidth)
+    }
 }
 
 struct GraphPane: View {
@@ -38,7 +44,8 @@ struct GraphPane: View {
                         List(selection: selectionBinding) {
                             // 未提交改动行：有未暂存/已暂存文件时显示在图最上面。
                             if let st = app.status, !st.clean {
-                                WorkingCopyRow(fileCount: st.staged.count + st.unstaged.count + st.conflicts.count)
+                                WorkingCopyRow(fileCount: st.staged.count + st.unstaged.count + st.conflicts.count,
+                                               graphWidth: geo.laneWidth)
                                     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
                                     .listRowSeparator(.hidden)
                             }
@@ -56,6 +63,8 @@ struct GraphPane: View {
                             }
                         }
                         .listStyle(.plain)
+                        // 跟侧边栏、文件清单一样藏掉 List 默认背景，透出统一的窗口底色。
+                        .scrollContentBackground(.hidden)
                         .onChange(of: app.graphScrollRequest) { _, request in
                             guard let request else { return }
                             withAnimation(.easeInOut(duration: 0.25)) {

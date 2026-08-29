@@ -21,7 +21,12 @@ struct WorkingCopyPane: View {
                 )) {
                     if let st = app.status {
                         Section {
-                            ForEach(st.staged) { f in WorkingFileRow(f: f, staged: true).tag(f.path) }
+                            // 空组给个占位，跟网页版 renderWip 的 "(empty)" 一致。
+                            if st.staged.isEmpty {
+                                Text("(empty)").font(.callout).foregroundStyle(.tertiary)
+                            } else {
+                                ForEach(st.staged) { f in WorkingFileRow(f: f, staged: true).tag(f.path) }
+                            }
                         } header: {
                             HStack {
                                 Text("Staged").font(.caption).foregroundStyle(.secondary)
@@ -48,7 +53,11 @@ struct WorkingCopyPane: View {
                         }
 
                         Section {
-                            ForEach(st.unstaged) { f in WorkingFileRow(f: f, staged: false).tag(f.path) }
+                            if st.unstaged.isEmpty {
+                                Text("(empty)").font(.callout).foregroundStyle(.tertiary)
+                            } else {
+                                ForEach(st.unstaged) { f in WorkingFileRow(f: f, staged: false).tag(f.path) }
+                            }
                         } header: {
                             HStack {
                                 Text("Unstaged").font(.caption).foregroundStyle(.secondary)

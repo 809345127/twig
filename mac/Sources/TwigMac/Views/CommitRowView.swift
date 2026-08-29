@@ -37,7 +37,7 @@ struct CommitRowView: View {
                     ctx.stroke(dot, with: .color(dotColor), lineWidth: 1)
                 }
             }
-            .frame(width: GraphMetrics.pad * 2 + CGFloat(graphWidth) * GraphMetrics.laneWidth)
+            .frame(width: GraphMetrics.graphColumnWidth(lanes: graphWidth))
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -141,6 +141,7 @@ enum GraphDateFormat {
 struct WorkingCopyRow: View {
     @EnvironmentObject var app: AppState
     let fileCount: Int
+    let graphWidth: Int   // 跟提交行同一个图列宽度，文字列才能对齐（之前只按 1 条轨道算，错位）
     @State private var isHovered = false
 
     private var selected: Bool { app.detailMode == .workingCopy }
@@ -150,14 +151,15 @@ struct WorkingCopyRow: View {
             Task { await app.showWorkingCopy() }
         } label: {
             HStack(spacing: 8) {
-                // 虚线圆圈，跟 web 版一致。
+                // 虚线圆圈，跟 web 版一致。画布的宽度跟提交行一致（同一个图列宽），
+                // 这行的文字才会跟下面所有提交的 subject 垂直对齐。
                 Canvas { ctx, size in
                     let center = CGPoint(x: GraphMetrics.laneX(0), y: size.height / 2)
                     let r = GraphMetrics.dotRadius
                     let circle = Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2))
                     ctx.stroke(circle, with: .color(.secondary), style: StrokeStyle(lineWidth: 2, dash: [2, 2]))
                 }
-                .frame(width: GraphMetrics.pad * 2 + GraphMetrics.laneWidth)
+                .frame(width: GraphMetrics.graphColumnWidth(lanes: graphWidth))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Uncommitted changes (\(fileCount) file\(fileCount == 1 ? "" : "s"))")
