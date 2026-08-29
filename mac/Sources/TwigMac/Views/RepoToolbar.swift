@@ -21,9 +21,15 @@ struct RepoToolbar: ToolbarContent {
                 }
                 // 系统给 .navigation 位置的自定义内容自动套一个圆角底，那层底几乎不留
                 // 内边距——文字第一个字符正好卡在圆角开始弯曲的地方。加左右内边距
-                // 把文字往里推，躲开圆角。宽度相应加大。
+                // 把文字往里推，躲开圆角。
                 .padding(.horizontal, 10)
-                .frame(width: 220, alignment: .leading)
+                // ⚠️ 宽度必须是弹性的（上限 220），不能写死。.navigation 项的区域宽度
+                // 会跟踪 HSplitView 第一条分隔线（实测：胶囊跟侧边栏一样宽）。侧边栏
+                // minWidth 是 220，而写死 220 的内容 + padding 要 240——分隔线拖到
+                // 最小宽度附近时可用区域装不下内容，工具栏在临界点突然裁剪重排，
+                // 肉眼看到就是"拖到胶囊位置闪一下"（2026-08-29 用户实测复现）。
+                // 弹性宽度让文字随区域收窄平滑截断，没有临界点。
+                .frame(maxWidth: 220, alignment: .leading)
             }
             .buttonStyle(.plain)
             .help("Open a different repository…")
