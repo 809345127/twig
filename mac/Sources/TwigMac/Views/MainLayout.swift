@@ -5,17 +5,16 @@ struct MainLayout: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 整个内容区统一用窗口背景色，侧边栏和主内容区同色，
+            // 工具栏下面只有一个颜色块，不会出现横跨两色的割裂感。
             HSplitView {
                 SidebarView()
                     .frame(minWidth: 220, idealWidth: 260, maxWidth: 400)
-                    // ⚠️ 不能直接用 .background(.ultraThinMaterial)——material 会创建
-                    // NSVisualEffectView 层，在 macOS 上可能拦截鼠标事件，导致侧边栏
-                    // 的分支行点不动。用 .background { } 包一层并 allowsHitTesting(false)
-                    // 让材质只做视觉、不参与点击测试。
-                    .background {
+                    // 侧边栏右侧加一条细分隔线，和主内容区区分开。
+                    .overlay(alignment: .trailing) {
                         Rectangle()
-                            .fill(.ultraThinMaterial)
-                            .allowsHitTesting(false)
+                            .fill(Color(nsColor: .separatorColor))
+                            .frame(width: 0.5)
                     }
 
                 VSplitView {
@@ -24,15 +23,14 @@ struct MainLayout: View {
                             .frame(minHeight: 180)
                         ConflictStateBanner()
                     }
-                    // 主内容区用不透明背景，和侧边栏的通透形成对比。
-                    .background(Color(nsColor: .windowBackgroundColor))
 
                     DetailPane()
                         .frame(minHeight: 200)
-                        .background(Color(nsColor: .windowBackgroundColor))
                 }
                 .frame(minWidth: 560)
             }
+            .background(Color(nsColor: .windowBackgroundColor))
+
             StatusBar()
         }
         .toolbar { RepoToolbar() }

@@ -236,6 +236,9 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // 隐藏 List 默认的滚动内容背景，透出外面统一的窗口背景色，
+        // 避免侧边栏出现和主内容区不一致的灰色。
+        .scrollContentBackground(.hidden)
         .searchable(text: $branchFilter, prompt: "Filter branches")
     }
 
