@@ -33,27 +33,36 @@ struct GraphPane: View {
                         app.selectedRefs.isEmpty ? "This repository has no commits yet." : "No commits on the checked branches.",
                         systemImage: "point.3.connected.trianglepath.dotted")
                 } else {
-                    List(selection: selectionBinding) {
-                        // 未提交改动行：有未暂存/已暂存文件时显示在图最上面。
-                        if let st = app.status, !st.clean {
-                            WorkingCopyRow(fileCount: st.staged.count + st.unstaged.count + st.conflicts.count)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
-                                .listRowSeparator(.hidden)
+                    // ScrollViewReader 让 "Locate in graph" 能把目标行滚到可视区中央。
+                    ScrollViewReader { proxy in
+                        List(selection: selectionBinding) {
+                            // 未提交改动行：有未暂存/已暂存文件时显示在图最上面。
+                            if let st = app.status, !st.clean {
+                                WorkingCopyRow(fileCount: st.staged.count + st.unstaged.count + st.conflicts.count)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
+                                    .listRowSeparator(.hidden)
+                            }
+                            ForEach(Array(g.commits.enumerated()), id: \.element.id) { idx, commit in
+                                CommitRowView(commit: commit, row: geo.rows[idx], graphWidth: geo.laneWidth,
+                                              isHead: app.head?.hash == commit.hash,
+                                              selected: isSelected(commit.hash),
+                                              compareFrom: isCompareFrom(commit.hash),
+                                              compareTo: isCompareTo(commit.hash))
+                                    .tag(commit.hash)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(Color.clear)
+                                    .contextMenu { commitContextMenu(commit) }
+                            }
                         }
-                        ForEach(Array(g.commits.enumerated()), id: \.element.id) { idx, commit in
-                            CommitRowView(commit: commit, row: geo.rows[idx], graphWidth: geo.laneWidth,
-                                          isHead: app.head?.hash == commit.hash,
-                                          selected: isSelected(commit.hash),
-                                          compareFrom: isCompareFrom(commit.hash),
-                                          compareTo: isCompareTo(commit.hash))
-                                .tag(commit.hash)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                                .contextMenu { commitContextMenu(commit) }
+                        .listStyle(.plain)
+                        .onChange(of: app.graphScrollRequest) { _, request in
+                            guard let request else { return }
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                proxy.scrollTo(request.hash, anchor: .center)
+                            }
                         }
                     }
-                    .listStyle(.plain)
                 }
                 GraphStats()
             } else {

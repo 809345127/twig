@@ -67,8 +67,8 @@ struct DetailPane: View {
                 WorkingCopyPane()
             }
         }
-        // 详情面板切换时的平滑过渡，符合 macOS HIG 的动画规范。
-        .animation(.easeInOut(duration: 0.2), value: app.detailMode)
+        // 故意不加切换动画：detailMode 在逐行浏览提交时也会变（关联值是 hash），
+        // 每点一行都淡入淡出会发"粘"；模式切换（进/出比较、工作区）直接呈现更跟手。
     }
 
     private func plural(_ n: Int) -> String { n == 1 ? "1 file" : "\(n) files" }
@@ -144,7 +144,10 @@ struct FileListView: View {
                 })) { f in
                     FileRow(file: f).tag(f.path)
                 }
-                .listStyle(.sidebar)
+                // 用 .plain 并藏掉 List 默认背景：文件清单在内容区里，不是侧边栏，
+                // .sidebar 样式会带一层灰色 material，跟统一后的窗口底色不一致。
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
             }
         }
     }
@@ -155,28 +158,67 @@ struct FileRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(file.status)
-                .font(.caption.monospaced().bold())
-                .foregroundStyle(statusColor)
-                .frame(width: 14)
-            Text((file.path as NSString).lastPathComponent).lineLimit(1)
-            Spacer()
+            FileStatusBadge(status: file.status)
+            // 显示完整路径（网页版也显示全路径）：目录部分用三级前景色弱化，
+            // 空间不够时优先压缩目录，文件名始终完整可见。
+            FilePathText(path: file.path)
+            Spacer(minLength: 4)
             if !file.binary {
-                if file.additions > 0 { Text("+\(file.additions)").font(.caption2).foregroundStyle(.green) }
-                if file.deletions > 0 { Text("-\(file.deletions)").font(.caption2).foregroundStyle(.red) }
+                if file.additions > 0 { Text("+\(file.additions)").font(.caption2.monospaced()).foregroundStyle(.green) }
+                if file.deletions > 0 { Text("-\(file.deletions)").font(.caption2.monospaced()).foregroundStyle(.red) }
             } else {
                 Text("bin").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .help(file.origPath.isEmpty ? file.path : "\(file.origPath) → \(file.path)")
     }
+}
 
-    private var statusColor: Color {
-        switch file.status {
-        case "A": return .green
-        case "D": return .red
-        case "R", "C": return .purple
-        default: return .orange
+// 文件状态小色块：白字 + 固定底色 + 3pt 圆角，颜色跟网页版 .st.A/.M/.D/... 逐个对齐，
+// 两个产品线看起来是同一套状态语言。
+struct FileStatusBadge: View {
+    let status: String
+
+    var body: some View {
+        Text(status)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(.white)
+            .frame(width: 16, height: 16)
+            .background(background, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+    }
+
+    private var background: Color {
+        switch status {
+        case "A": return Color(hex: "#1a7f37")
+        case "M": return Color(hex: "#9a6700")
+        case "D": return Color(hex: "#cf222e")
+        case "R": return Color(hex: "#6639ba")
+        case "C": return Color(hex: "#0969da")
+        case "U": return Color(hex: "#bf3989")
+        default: return Color.secondary
         }
+    }
+}
+
+// 文件路径文本：目录段三级灰、文件名一级色，单行显示；
+// 窄的时候目录段先被截断（layoutPriority 让文件名保住）。
+struct FilePathText: View {
+    let path: String
+
+    var body: some View {
+        let ns = path as NSString
+        let name = ns.lastPathComponent
+        let dir = ns.deletingLastPathComponent
+        HStack(spacing: 0) {
+            if dir != "." && !dir.isEmpty {
+                Text(dir + "/")
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(-1)
+            }
+            Text(name).lineLimit(1)
+        }
+        .font(.callout)
     }
 }

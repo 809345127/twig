@@ -11,6 +11,13 @@ enum DetailMode: Equatable {
     case workingCopy
 }
 
+// "Locate in graph" 的滚动请求：nonce 每次自增，
+// 这样连续定位到同一行（值没变）时 onChange 也照样能触发。
+struct GraphScrollRequest: Equatable {
+    let hash: String
+    let nonce: Int
+}
+
 @MainActor
 final class AppState: ObservableObject {
     // MARK: - 连接状态
@@ -41,6 +48,15 @@ final class AppState: ObservableObject {
     @Published var commitDetail: CommitDetail?
     @Published var rangeDetail: RangeDetail?
     @Published var selectedFile: DiffFile?
+    // 图区滚动请求（Locate in graph / 点 tag 行时用），nil 表示没有请求。
+    @Published var graphScrollRequest: GraphScrollRequest?
+    private var graphScrollNonce = 0
+
+    // 请求把某一行滚到图区中央；只负责发请求，真正的 scrollTo 在 GraphPane 里做。
+    func requestGraphScroll(_ hash: String) {
+        graphScrollNonce += 1
+        graphScrollRequest = GraphScrollRequest(hash: hash, nonce: graphScrollNonce)
+    }
 
     // MARK: - diff 面板
     //
@@ -72,6 +88,9 @@ final class AppState: ObservableObject {
     //
     // 默认开。关掉之后 watchLoop 不再去问 /api/watch，服务端那边没人问也会把探测停掉。
     @Published var autoRefresh: Bool = true
+
+    // 侧边栏显隐（菜单 View > Toggle Sidebar，⌥⌘S）。
+    @Published var sidebarVisible: Bool = true
 
     // MARK: - 比较模式（Cmd/Ctrl 勾第二个提交）
     // 比较状态完全由 detailMode .compare(from:to:) 承载，不需要额外的 anchor 字段。

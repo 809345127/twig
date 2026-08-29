@@ -101,7 +101,7 @@ struct ConflictStateBanner: View {
                         Task { await app.runOp(.init(action: "continue", state: state), label: "Continue \(label)") }
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                    .tint(.accentColor)
                 }
                 Button("Abort") {
                     Task { await app.runOp(.init(action: "abort", state: state), label: "Abort \(label)") }

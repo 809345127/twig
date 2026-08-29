@@ -8,6 +8,7 @@ struct DiffPanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 整条工具条统一 caption 字号，跟图工具条、文件清单表头一致（网页版 diff-bar 也是 12px）。
             HStack(spacing: 14) {
                 Picker("", selection: Binding(
                     get: { app.diffViewMode },
@@ -17,23 +18,26 @@ struct DiffPanelView: View {
                     Text("Split").tag(DiffViewMode.split)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 160)
+                .frame(width: 150)
                 .labelsHidden()
 
                 Toggle("Ignore whitespace", isOn: Binding(
                     get: { app.ignoreWhitespace },
                     set: { app.setIgnoreWhitespace($0) }
                 )).toggleStyle(.checkbox)
+                .fixedSize(horizontal: true, vertical: false)
                 .help("Hide lines that differ only in whitespace — reindented blocks, tabs vs spaces, trailing spaces (git diff -b).")
 
                 Toggle("Ignore comments", isOn: Binding(
                     get: { app.ignoreComments },
                     set: { app.setIgnoreComments($0) }
                 )).toggleStyle(.checkbox)
+                .fixedSize(horizontal: true, vertical: false)
                 .help("Hide changes where every changed line is a comment (git diff -I). A comment change within 3 lines of a code change still shows — it falls inside git's context window.")
 
                 Spacer()
             }
+            .font(.caption)
             .padding(.horizontal, 10).padding(.vertical, 6)
             Divider()
 

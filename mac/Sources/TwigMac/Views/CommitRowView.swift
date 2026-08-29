@@ -11,6 +11,9 @@ struct CommitRowView: View {
 
     @State private var isHovered = false
 
+    // 比较模式下两端都算"选中"，只是端色条颜色不同。
+    private var highlighted: Bool { selected || compareFrom || compareTo }
+
     var body: some View {
         HStack(spacing: 8) {
             Canvas { ctx, size in
@@ -26,6 +29,7 @@ struct CommitRowView: View {
                 let r = row.isMerge ? GraphMetrics.dotRadius - 0.5 : GraphMetrics.dotRadius
                 let dot = Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2))
                 if isHead {
+                    // 跟网页版一致：HEAD 是空心圆环，内部填窗口底色、外圈描 3pt 车道色。
                     ctx.fill(dot, with: .color(.init(nsColor: .windowBackgroundColor)))
                     ctx.stroke(dot, with: .color(dotColor), lineWidth: 3)
                 } else {
@@ -54,7 +58,7 @@ struct CommitRowView: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Text("·").foregroundStyle(.tertiary)
-                    Text(relativeDate(commit.timestamp))
+                    Text(GraphDateFormat.string(commit.timestamp))
                         .foregroundStyle(.secondary)
                 }
                 .font(.caption)
@@ -67,19 +71,25 @@ struct CommitRowView: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .background(backgroundColor)
+        // 比较模式两端各一条 3pt 端色条：起点（更早）灰色、终点强调色，
+        // 跟网页版 .cmp-from / .cmp-to 的 inset 色条对应。
+        .overlay(alignment: .leading) {
+            if compareFrom {
+                Rectangle().fill(Color.secondary).frame(width: 3)
+            } else if compareTo {
+                Rectangle().fill(Color.accentColor).frame(width: 3)
+            }
+        }
     }
 
-    // 行背景：选中 > 比较模式 from/to > hover > 透明。
-    // 比较模式下 from 用稍深的蓝，to 用稍浅的蓝，跟 web 版 cmp-from/cmp-to 对应。
+    // 行背景：选中/比较两端 > hover > 透明。比较的两端用同一档底色，
+    // 区别只在左侧端色条（跟网页版 .sel + cmp-from/cmp-to 的组合一致）。
     private var backgroundColor: Color {
-        if selected || compareFrom {
+        if highlighted {
             return Color.accentColor.opacity(0.18)
         }
-        if compareTo {
-            return Color.accentColor.opacity(0.10)
-        }
         if isHovered {
-            return Color.primary.opacity(0.04)
+            return Color.primary.opacity(0.05)
         }
         return Color.clear
     }
@@ -92,12 +102,37 @@ struct CommitRowView: View {
         case .bottom: return CGPoint(x: x, y: height)
         }
     }
+}
 
-    private func relativeDate(_ ts: Int64) -> String {
+// 提交图行的日期格式跟网页版 fmtDate 逐个对齐（界面一律英文，月份固定英文缩写）：
+// 今天 → "Today 14:32"，昨天 → "Yesterday 09:15"，今年 → "Aug 28, 14:32"，
+// 更早 → "Aug 28, 2025"。formatter 初始化不便宜，图上几百行共享这几个静态实例。
+enum GraphDateFormat {
+    private static let todayFmt: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "'Today' HH:mm"; return f
+    }()
+    private static let yesterdayFmt: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "'Yesterday' HH:mm"; return f
+    }()
+    private static let thisYearFmt: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d, HH:mm"; return f
+    }()
+    private static let olderFmt: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d, yyyy"; return f
+    }()
+    private static let calendar = Calendar(identifier: .gregorian)
+
+    static func string(_ ts: Int64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(ts))
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f.localizedString(for: date, relativeTo: Date())
+        let now = Date()
+        if calendar.isDateInToday(date) { return todayFmt.string(from: date) }
+        if calendar.isDateInYesterday(date) { return yesterdayFmt.string(from: date) }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        return sameYear ? thisYearFmt.string(from: date) : olderFmt.string(from: date)
     }
 }
 
@@ -106,6 +141,9 @@ struct CommitRowView: View {
 struct WorkingCopyRow: View {
     @EnvironmentObject var app: AppState
     let fileCount: Int
+    @State private var isHovered = false
+
+    private var selected: Bool { app.detailMode == .workingCopy }
 
     var body: some View {
         Button {
@@ -124,7 +162,8 @@ struct WorkingCopyRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Uncommitted changes (\(fileCount) file\(fileCount == 1 ? "" : "s"))")
                         .font(.body)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                        .fontWeight(selected ? .semibold : .regular)
                     Text("working copy")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -135,29 +174,61 @@ struct WorkingCopyRow: View {
             .padding(.horizontal, 4)
             .frame(height: GraphMetrics.rowHeight)
             .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+            .background(rowBackground)
         }
         .buttonStyle(.plain)
-        .listRowBackground(app.detailMode == .workingCopy ? Color.accentColor.opacity(0.15) : Color.clear)
+        // 选中背景直接画在行内（跟 CommitRowView 同一档透明度），
+        // listRowBackground 留空，避免两层底色叠加。
+        .listRowBackground(Color.clear)
+    }
+
+    private var rowBackground: Color {
+        if selected { return Color.accentColor.opacity(0.18) }
+        if isHovered { return Color.primary.opacity(0.05) }
+        return Color.clear
     }
 }
 
+// 分支 / tag 徽章：配色跟网页版 .reftag 对齐——
+// 当前分支实心强调色白字；其余本地分支浅强调色底+强调字+描边；
+// 远程分支中性灰；tag 柔和琥珀。不用之前那种绿/橙/紫实心胶囊。
 struct RefBadge: View {
     let ref: Ref
 
     var body: some View {
         Text(ref.name)
             .font(.caption2.weight(.medium))
-            .padding(.horizontal, 6)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
             .padding(.vertical, 1)
             .background(background, in: Capsule())
-            .foregroundStyle(.white)
+            .overlay(Capsule().strokeBorder(border, lineWidth: 1))
+            .foregroundStyle(foreground)
+            .help(ref.fullName)
     }
 
     private var background: Color {
         switch ref.kind {
-        case "head": return ref.isHead ? .accentColor : .green
-        case "remote": return .orange
-        default: return .purple
+        case "head": return ref.isHead ? .accentColor : Color.accentColor.opacity(0.14)
+        case "remote": return Color.primary.opacity(0.06)
+        default: return Color.orange.opacity(0.15)
+        }
+    }
+
+    private var foreground: Color {
+        switch ref.kind {
+        case "head": return ref.isHead ? .white : .accentColor
+        case "remote": return .secondary
+        default: return .orange
+        }
+    }
+
+    private var border: Color {
+        switch ref.kind {
+        case "head": return ref.isHead ? .clear : Color.accentColor.opacity(0.5)
+        case "remote": return Color(nsColor: .separatorColor)
+        default: return Color.orange.opacity(0.4)
         }
     }
 }

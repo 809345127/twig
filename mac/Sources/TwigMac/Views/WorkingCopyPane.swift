@@ -30,7 +30,7 @@ struct WorkingCopyPane: View {
                                     Button("Unstage all") {
                                         Task { await app.runOp(.init(action: "unstage"), label: "Unstage all") }
                                     }
-                                        .font(.caption).buttonStyle(.plain).foregroundStyle(.blue)
+                                        .font(.caption).buttonStyle(.plain).foregroundStyle(Color.accentColor)
                                 }
                             }
                         }
@@ -57,20 +57,33 @@ struct WorkingCopyPane: View {
                                     Button("Stage all") {
                                         Task { await app.runOp(.init(action: "stage"), label: "Stage all") }
                                     }
-                                        .font(.caption).buttonStyle(.plain).foregroundStyle(.blue)
+                                        .font(.caption).buttonStyle(.plain).foregroundStyle(Color.accentColor)
                                 }
                             }
                         }
                     }
                 }
-                .listStyle(.sidebar)
+                // 同 DetailPane 的文件清单：内容区里用 .plain，避免 .sidebar 的灰底。
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
 
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
-                    TextEditor(text: $commitMessage)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(height: 70)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
+                    // ZStack 叠一层占位文字：TextEditor 原生没有 placeholder。
+                    ZStack(alignment: .topLeading) {
+                        if commitMessage.isEmpty {
+                            Text("Describe your changes…  (⌘↵ to commit)")
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+                        TextEditor(text: $commitMessage)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    .frame(height: 70)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
                     HStack {
                         Toggle("Amend", isOn: Binding(
                             get: { amend },
@@ -122,12 +135,10 @@ private struct WorkingFileRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(statusChar)
-                .font(.caption.monospaced().bold())
-                .foregroundStyle(conflict ? .red : .orange)
-                .frame(width: 14)
-            Text((f.path as NSString).lastPathComponent).lineLimit(1)
-            Spacer()
+            // 状态色块跟提交详情文件清单、网页版同一套。
+            FileStatusBadge(status: statusChar)
+            FilePathText(path: f.path)
+            Spacer(minLength: 4)
             if staged {
                 Button("Unstage") {
                     Task { await app.runOp(.init(action: "unstage", paths: [f.path]), label: "Unstage \(f.path)") }
@@ -149,8 +160,11 @@ private struct WorkingFileRow: View {
     }
 
     private var statusChar: String {
+        // 跟网页版 renderWip 同一个映射：冲突 U、未跟踪按新增 A，其余取 git 状态字母。
         if conflict { return "U" }
+        if f.untracked { return "A" }
         let c = staged ? f.index : f.work
-        return c.trimmingCharacters(in: .whitespaces).isEmpty ? "?" : c
+        let trimmed = c.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? "A" : trimmed
     }
 }

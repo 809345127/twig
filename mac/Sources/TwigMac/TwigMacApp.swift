@@ -30,10 +30,12 @@ struct TwigMacApp: App {
                 Button("Refresh") { Task { await app.refreshAll() } }
                     .keyboardShortcut("r", modifiers: .command)
             }
-            // 视图菜单：显示/隐藏侧边栏（标准 macOS 快捷键 Cmd+Option+S）
+            // 视图菜单：显示/隐藏侧边栏（标准 macOS 快捷键 Cmd+Option+S）。
+            // HSplitView 没有 NSSplitViewController，responder chain 上的
+            // toggleSidebar: 没人接，直接切 AppState 里的显隐状态。
             CommandGroup(after: .toolbar) {
-                Button("Toggle Sidebar") {
-                    NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
+                Button(app.sidebarVisible ? "Hide Sidebar" : "Show Sidebar") {
+                    app.sidebarVisible.toggle()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
             }

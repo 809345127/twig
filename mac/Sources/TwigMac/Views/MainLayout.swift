@@ -8,14 +8,18 @@ struct MainLayout: View {
             // 整个内容区统一用窗口背景色，侧边栏和主内容区同色，
             // 工具栏下面只有一个颜色块，不会出现横跨两色的割裂感。
             HSplitView {
-                SidebarView()
-                    .frame(minWidth: 220, idealWidth: 260, maxWidth: 400)
-                    // 侧边栏右侧加一条细分隔线，和主内容区区分开。
-                    .overlay(alignment: .trailing) {
-                        Rectangle()
-                            .fill(Color(nsColor: .separatorColor))
-                            .frame(width: 0.5)
-                    }
+                // 侧边栏可由菜单 ⌥⌘S 隐藏：HSplitView 不是 NSSplitViewController，
+                // responder chain 上没人响应 toggleSidebar:，只能在这里条件挂载。
+                if app.sidebarVisible {
+                    SidebarView()
+                        .frame(minWidth: 220, idealWidth: 260, maxWidth: 400)
+                        // 侧边栏右侧加一条细分隔线，和主内容区区分开。
+                        .overlay(alignment: .trailing) {
+                            Rectangle()
+                                .fill(Color(nsColor: .separatorColor))
+                                .frame(width: 0.5)
+                        }
+                }
 
                 VSplitView {
                     VStack(spacing: 0) {
@@ -59,7 +63,6 @@ struct StatusBar: View {
             if app.busy {
                 ProgressView()
                     .controlSize(.small)
-                    .scaleEffect(0.7)
             }
             Text(statusText)
                 .font(.caption)
@@ -67,7 +70,7 @@ struct StatusBar: View {
                 .lineLimit(1)
             Spacer()
             if app.lastOutput != nil {
-                Button("output") {
+                Button("Output") {
                     app.showOutputModal = true
                 }
                 .buttonStyle(.plain)

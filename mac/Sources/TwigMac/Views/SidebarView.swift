@@ -37,7 +37,7 @@ struct SidebarView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .listRowBackground(app.detailMode == .workingCopy ? Color.accentColor.opacity(0.15) : nil)
+                .listRowBackground(app.detailMode == .workingCopy ? Color.accentColor.opacity(0.18) : nil)
             }
 
             // "Recent" 放在这里、紧跟 Working Copy 之后——它跟"当前这个仓库"无关，是切去
@@ -73,26 +73,28 @@ struct SidebarView: View {
                 HStack(spacing: 4) {
                     Image(systemName: branchesExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2).foregroundStyle(.secondary)
-                    Text("Branches")
-                    Text("(\(heads.count))").foregroundStyle(.secondary)
+                    // 标题样式对齐真正的 Section 标题（11pt 加粗次要色），
+                    // 不然自定义折叠标题是正文字号，比上面的 "Working Copy" 还显眼。
+                    Text("Branches").sectionHeaderFont
+                    Text("(\(heads.count))").sectionHeaderFont
                     Spacer()
                     Button("All") {
                         app.selectedRefs = Set(app.refs.filter { $0.kind == "head" }.map { $0.fullName })
                         Task { await app.reloadGraphOnly() }
                     }
-                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(Color.accentColor)
                     Button("None") {
                         app.selectedRefs = []
                         Task { await app.reloadGraphOnly() }
                     }
-                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(Color.accentColor)
                     Button("Current") {
                         if let cur = app.refs.first(where: { $0.kind == "head" && $0.isHead }) {
                             app.selectedRefs = [cur.fullName]
                             Task { await app.reloadGraphOnly() }
                         }
                     }
-                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(Color.accentColor)
                     Button {
                         if let r = app.askInput(title: "New Branch", message: "Starting from the current HEAD",
                                                  placeholder: "feature/my-branch",
@@ -125,8 +127,8 @@ struct SidebarView: View {
                     HStack(spacing: 4) {
                         Image(systemName: remotesExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption2).foregroundStyle(.secondary)
-                        Text("Remote Branches")
-                        Text("(\(remotes.count))").foregroundStyle(.secondary)
+                        Text("Remote Branches").sectionHeaderFont
+                        Text("(\(remotes.count))").sectionHeaderFont
                         Spacer()
                     }
                 }
@@ -151,8 +153,8 @@ struct SidebarView: View {
                     HStack(spacing: 4) {
                         Image(systemName: tagsExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption2).foregroundStyle(.secondary)
-                        Text("Tags")
-                        Text("(\(tags.count))").foregroundStyle(.secondary)
+                        Text("Tags").sectionHeaderFont
+                        Text("(\(tags.count))").sectionHeaderFont
                         Spacer()
                     }
                 }
@@ -188,8 +190,8 @@ struct SidebarView: View {
                 HStack(spacing: 4) {
                     Image(systemName: stashesExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2).foregroundStyle(.secondary)
-                    Text("Stashes")
-                    Text("(\(app.stashes.count))").foregroundStyle(.secondary)
+                    Text("Stashes").sectionHeaderFont
+                    Text("(\(app.stashes.count))").sectionHeaderFont
                     Spacer()
                     Button {
                         if app.status?.clean ?? true {
@@ -242,12 +244,13 @@ struct SidebarView: View {
         .searchable(text: $branchFilter, prompt: "Filter branches")
     }
 
-    // 在图上定位到某个 ref 指向的提交：选中它，详情面板就会显示那个提交。
+    // 在图上定位到某个 ref 指向的提交：选中它、详情面板显示它，并把那一行滚到图区中央。
     private func locateInGraph(_ hash: String) {
         guard let commits = app.graph?.commits, commits.contains(where: { $0.hash == hash }) else {
             app.setStatus("This ref is not on the graph (not checked, or beyond the shown commit count)", kind: "err")
             return
         }
+        app.requestGraphScroll(hash)
         Task { await app.selectCommit(hash) }
     }
 
@@ -315,7 +318,7 @@ private struct RefRow: View {
                 Text(ref.name).lineLimit(1)
                 if ref.isHead {
                     Image(systemName: "arrow.right.circle.fill")
-                        .font(.caption2).foregroundStyle(.blue)
+                        .font(.caption2).foregroundStyle(Color.accentColor)
                 }
                 Spacer()
                 if ref.ahead > 0 || ref.behind > 0 {
@@ -327,5 +330,13 @@ private struct RefRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// 自定义折叠分组标题统一用这套字号字重，视觉上对齐系统 Section 的小标题。
+private extension View {
+    var sectionHeaderFont: some View {
+        self.font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
     }
 }
